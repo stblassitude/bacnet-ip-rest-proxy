@@ -1,0 +1,39 @@
+# Example configuration for bacnet-ip-rest-proxy. See README.md for full
+# documentation of every field. Installed to /etc/bacnet-ip-rest-proxy/config.yaml
+# by the .deb package; edit it, then `systemctl enable --now bacnet-ip-rest-proxy`.
+
+listen:
+  address: "0.0.0.0:8443"
+  tls:
+    enabled: false
+    # certFile: /etc/bacnet-ip-rest-proxy/cert.pem
+    # keyFile: /etc/bacnet-ip-rest-proxy/key.pem
+
+bacnet:
+  localPort: 0 # 0 picks an ephemeral local UDP port
+  timeout: 3s
+  retries: 3
+
+authentication:
+  tokens:
+    - name: example-token
+      token: "change-me-to-a-long-random-string"
+  # jwtSecret: "change-me-to-a-long-random-shared-secret"
+
+# No rules are configured below, so every request is denied by the implicit
+# default until you add rules that match your tokens/JWTs/devices/IPs.
+authorization:
+  rules: []
+  # rules:
+  #   - name: allow the example token full access
+  #     conditions:
+  #       - type: token
+  #         value: example-token
+  #     match: all
+  #     permission: readwrite
+  #     action: allow
+
+devices: {}
+# devices:
+#   default: 192.168.3.2
+#   integra: integra-controller.example.com

@@ -1,0 +1,39 @@
+# nfpm (https://nfpm.goreleaser.com) package spec, used by
+# .github/workflows/release.yml to build a .deb on tagged releases.
+# VERSION and ARCH are supplied via environment variables at build time.
+name: bacnet-ip-rest-proxy
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Stefan Bethke <stb@lassitu.de>
+homepage: https://github.com/stblassitude/bacnet-ip-rest-proxy
+description: |
+  REST-to-BACnet/IP proxy. Translates HTTP REST calls into BACnet/IP
+  ReadProperty/WriteProperty/ReadPropertyMultiple requests against
+  configured devices, with bearer-token authentication and a rule-based
+  authorization engine.
+
+contents:
+  - src: dist/bacnet-ip-rest-proxy
+    dst: /usr/sbin/bacnet-ip-rest-proxy
+    file_info:
+      mode: 0755
+
+  - src: systemd/bacnet-ip-rest-proxy.service
+    dst: /lib/systemd/system/bacnet-ip-rest-proxy.service
+    file_info:
+      mode: 0644
+
+  - src: config.example.yaml
+    dst: /etc/bacnet-ip-rest-proxy/config.yaml
+    type: config|noreplace
+    file_info:
+      # The config carries bearer tokens and a JWT signing secret; the
+      # service runs as root, so keep it unreadable by other local users.
+      mode: 0600
+
+scripts:
+  postinstall: packaging/postinst
+  postremove: packaging/postrm

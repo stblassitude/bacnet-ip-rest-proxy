@@ -1,0 +1,13 @@
+[Unit]
+Description=Bacnet/IP REST Proxy
+Documentation=https://github.com/stblassitude/bacnet-ip-rest-proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/bacnet-ip-rest-proxy -config /etc/bacnet-ip-rest-proxy/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

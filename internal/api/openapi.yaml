@@ -1,0 +1,324 @@
+openapi: 3.0.3
+info:
+  title: BACnet/IP REST Proxy
+  description: >
+    Translates HTTP REST calls into BACnet/IP requests against configured
+    BACnet devices. Access is controlled by bearer-token authentication and a
+    rule-based authorization engine (see the project README).
+  version: "1.0.0"
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+tags:
+  - name: devices
+  - name: objects
+  - name: properties
+paths:
+  /devices:
+    get:
+      tags: [devices]
+      summary: List configured device aliases
+      operationId: listDevices
+      responses:
+        "200":
+          description: The configured device alias table.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeviceSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /devices/{deviceId}:
+    get:
+      tags: [devices]
+      summary: Read a device's identity summary
+      description: >
+        Resolves the device's BACnet instance number (via Who-Is/I-Am) and
+        reads object-name, vendor-name and model-name from its Device object.
+      operationId: getDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Device summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/BACnetError"
+        "504":
+          $ref: "#/components/responses/BACnetTimeout"
+
+  /devices/{deviceId}/objects:
+    get:
+      tags: [objects]
+      summary: List a device's BACnet objects
+      description: Reads the device's object-list property.
+      operationId: listObjects
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: The device's objects.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ObjectSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/BACnetError"
+        "504":
+          $ref: "#/components/responses/BACnetTimeout"
+
+  /devices/{deviceId}/objects/{objectType}/{instance}:
+    get:
+      tags: [objects]
+      summary: Read a summary of one object
+      description: >
+        Reads a default set of properties (object-name, present-value,
+        description, units, status-flags) in a single
+        ReadPropertyMultiple call, silently omitting any the object doesn't
+        have.
+      operationId: getObject
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - $ref: "#/components/parameters/ObjectType"
+        - $ref: "#/components/parameters/Instance"
+      responses:
+        "200":
+          description: Object summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BACnetError"
+        "504":
+          $ref: "#/components/responses/BACnetTimeout"
+
+  /devices/{deviceId}/objects/{objectType}/{instance}/{property}:
+    get:
+      tags: [properties]
+      summary: Read one property
+      operationId: getProperty
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - $ref: "#/components/parameters/ObjectType"
+        - $ref: "#/components/parameters/Instance"
+        - $ref: "#/components/parameters/Property"
+        - name: index
+          in: query
+          description: Array index, for array-valued properties.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: The property's value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PropertyValue"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BACnetError"
+        "504":
+          $ref: "#/components/responses/BACnetTimeout"
+    put:
+      tags: [properties]
+      summary: Write one property
+      description: >
+        Requires readwrite permission. A null value relinquishes the given
+        priority (default 16) on a commandable property.
+      operationId: writeProperty
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - $ref: "#/components/parameters/ObjectType"
+        - $ref: "#/components/parameters/Instance"
+        - $ref: "#/components/parameters/Property"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WriteRequest"
+      responses:
+        "204":
+          description: Write succeeded.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Value rejected by the device (e.g. out of range).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          $ref: "#/components/responses/BACnetError"
+        "504":
+          $ref: "#/components/responses/BACnetTimeout"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Either an opaque token from authentication.tokens, or a JWT signed
+        with the configured shared secret.
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      description: A configured device alias, or a literal hostname/IP[:port].
+      schema:
+        type: string
+    ObjectType:
+      name: objectType
+      in: path
+      required: true
+      example: analog-input
+      schema:
+        type: string
+        enum:
+          - analog-input
+          - analog-output
+          - analog-value
+          - binary-input
+          - binary-output
+          - binary-value
+          - device
+          - multi-state-input
+          - multi-state-output
+          - multi-state-value
+    Instance:
+      name: instance
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    Property:
+      name: property
+      in: path
+      required: true
+      example: present-value
+      schema:
+        type: string
+  schemas:
+    DeviceSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        address:
+          type: string
+    ObjectSummary:
+      type: object
+      properties:
+        type:
+          type: string
+        instance:
+          type: integer
+    PropertyValue:
+      type: object
+      properties:
+        value:
+          description: A JSON number, string, bool, array, or object, depending on the BACnet property's type.
+    WriteRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          nullable: true
+          description: The value to write; null relinquishes the given priority.
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 16
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        bacnetErrorClass:
+          type: string
+        bacnetErrorCode:
+          type: string
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: No credentials were supplied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Credentials were supplied but access was denied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Unknown object or property.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BACnetError:
+      description: The device returned a BACnet error, or a protocol-level Reject/Abort.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BACnetTimeout:
+      description: The device did not respond in time.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

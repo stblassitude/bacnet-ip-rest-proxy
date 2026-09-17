@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+if [ "$1" = "configure" ]; then
+	echo "bacnet-ip-rest-proxy installed but not enabled."
+	echo "Review /etc/bacnet-ip-rest-proxy/config.yaml, then run:"
+	echo "  systemctl enable --now bacnet-ip-rest-proxy"
+fi
+
+exit 0
