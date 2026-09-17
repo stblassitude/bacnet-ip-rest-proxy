@@ -40,7 +40,9 @@ paths:
       summary: Read a device's identity summary
       description: >
         Resolves the device's BACnet instance number (via Who-Is/I-Am) and
-        reads object-name, vendor-name and model-name from its Device object.
+        reads Object_Name, Vendor_Name and Model_Name from its Device
+        object — the object every BACnet device exposes exactly once,
+        representing the device as a whole.
       operationId: getDevice
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -50,8 +52,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/DeviceInfo"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -65,7 +66,10 @@ paths:
     get:
       tags: [objects]
       summary: List a device's BACnet objects
-      description: Reads the device's object-list property.
+      description: >
+        Reads the device's Object_List property: the complete list of
+        BACnetObjectIdentifiers for every object present on the device,
+        including the device object itself.
       operationId: listObjects
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -92,10 +96,10 @@ paths:
       tags: [objects]
       summary: Read a summary of one object
       description: >
-        Reads a default set of properties (object-name, present-value,
-        description, units, status-flags) in a single
+        Reads a default set of properties (Object_Name, Present_Value,
+        Description, Units, Status_Flags) in a single
         ReadPropertyMultiple call, silently omitting any the object doesn't
-        have.
+        have (e.g. Units is meaningless on a Binary object).
       operationId: getObject
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -107,8 +111,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/ObjectInfo"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -134,7 +137,11 @@ paths:
         - $ref: "#/components/parameters/Property"
         - name: index
           in: query
-          description: Array index, for array-valued properties.
+          description: >
+            The BACnet property array index: a 1-based index into an
+            array-valued property (e.g. one slot of Priority_Array, or one
+            entry of Object_List), read or written on its own instead of the
+            whole array. Omit to address the whole property.
           schema:
             type: integer
             minimum: 0
@@ -161,8 +168,10 @@ paths:
       tags: [properties]
       summary: Write one property
       description: >
-        Requires readwrite permission. A null value relinquishes the given
-        priority (default 16) on a commandable property.
+        Issues a BACnet WriteProperty request. Requires readwrite
+        permission. A null value relinquishes the given priority (default
+        16) on a commandable property, per BACnet's command prioritization
+        scheme (see WriteRequest.priority below).
       operationId: writeProperty
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -218,6 +227,32 @@ components:
       in: path
       required: true
       example: analog-input
+      description: |
+        The BACnet object type, identifying what kind of object this is
+        (ASHRAE 135 clause 12). Together with `instance`, this forms the
+        object's BACnetObjectIdentifier.
+
+        - `analog-input` — a physical or calculated analog (real-number)
+          input point, e.g. a temperature or pressure sensor.
+        - `analog-output` — a physical analog output point that can be
+          commanded, e.g. a valve or damper position.
+        - `analog-value` — a generic analog value not tied to a specific
+          physical I/O point, e.g. a setpoint or calculated value.
+        - `binary-input` — a physical or calculated two-state
+          (active/inactive) input point, e.g. a status switch.
+        - `binary-output` — a physical two-state output point that can be
+          commanded, e.g. a relay, fan, or start/stop point.
+        - `binary-value` — a generic two-state value not tied to a specific
+          physical I/O point.
+        - `device` — the device object itself: every BACnet device exposes
+          exactly one, representing the device as a whole.
+        - `multi-state-input` — an input point whose value is one of a
+          discrete, ordered set of states (an unsigned state index), e.g. a
+          mode indicator.
+        - `multi-state-output` — a commandable output point whose value is
+          one of a discrete set of states.
+        - `multi-state-value` — a generic multi-state value not tied to a
+          specific physical I/O point.
       schema:
         type: string
         enum:
@@ -235,6 +270,10 @@ components:
       name: instance
       in: path
       required: true
+      description: >
+        The object's instance number (0-4194302), unique among objects of
+        this `objectType` on the device. Forms the low 22 bits of the
+        object's BACnetObjectIdentifier.
       schema:
         type: integer
         minimum: 0
@@ -243,48 +282,211 @@ components:
       in: path
       required: true
       example: present-value
+      description: |
+        The BACnet property identifier to read or write (ASHRAE 135
+        clause 12 defines which properties each object type supports).
+        Recognized values:
+
+        - `object-identifier` — the object's own BACnetObjectIdentifier
+          (type + instance).
+        - `object-name` — a user-visible name for the object, unique among
+          all objects on the device.
+        - `object-type` — the object's BACnet object type enumeration.
+        - `present-value` — the current value of the object's primary
+          variable: a real number for Analog objects, an active/inactive
+          state for Binary objects, or a 1-based state index for
+          Multi-state objects. Writable, via the priority array, on
+          commandable (Output/Value) objects.
+        - `description` — a free-text, human-readable description of the
+          object, e.g. its physical location or purpose.
+        - `status-flags` — a 4-bit BACnet BIT STRING, `[in-alarm, fault,
+          overridden, out-of-service]`, summarizing the object's
+          operational health.
+        - `event-state` — the object's current event/alarm state (e.g.
+          `normal`, `fault`, `off-normal`).
+        - `out-of-service` — whether Present_Value has been decoupled from
+          the physical input/output it represents, e.g. for testing.
+        - `units` — the engineering units Present_Value is expressed in
+          (BACnet's Engineering_Units enumeration, e.g.
+          `degrees-celsius`, `percent`); Analog objects only.
+        - `priority-array` — the 16-slot command priority array backing a
+          commandable Present_Value; each slot holds the value written at
+          that priority (1 = highest, e.g. manual-life-safety) or is
+          `null` if that priority is relinquished. The highest-priority
+          (lowest-numbered) non-null slot determines the effective
+          Present_Value.
+        - `relinquish-default` — the Present_Value used when every
+          priority-array slot is relinquished (`null`).
+        - `object-list` — the list of BACnetObjectIdentifiers for every
+          object on the device; meaningful only on the device object.
+        - `vendor-name` — the device manufacturer's name; device object
+          only.
+        - `model-name` — the manufacturer's model name/number; device
+          object only.
+        - `firmware-revision` — the device's firmware revision string;
+          device object only.
+        - `application-software-version` — the device's application
+          software version string; device object only.
+        - `number-of-states` — the number of discrete states a
+          Multi-state object supports (states are numbered 1..N).
       schema:
         type: string
   schemas:
     DeviceSummary:
       type: object
+      description: One entry of the configured device alias table.
       properties:
         id:
           type: string
+          description: >
+            The alias used as `{deviceId}` in other endpoints (or the
+            literal hostname/IP a caller may use directly instead).
         address:
           type: string
+          description: The hostname/IP[:port] this alias resolves to.
+    DeviceInfo:
+      type: object
+      description: >
+        A device's identity, read from its Device object (ASHRAE 135
+        clause 12.11) — the single object every BACnet device exposes to
+        represent itself.
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          description: The `deviceId` this summary was requested for.
+        address:
+          type: string
+          description: The hostname/IP[:port] the device was reached at.
+        instance:
+          type: integer
+          description: >
+            The device's BACnet device instance number, resolved via a
+            unicast Who-Is/I-Am exchange and cached for the life of the
+            proxy process.
+        object-name:
+          type: string
+          description: >
+            Object_Name — a user-visible name for the device object,
+            unique among all objects on the device.
+        vendor-name:
+          type: string
+          description: Vendor_Name — the device manufacturer's name.
+        model-name:
+          type: string
+          description: >
+            Model_Name — the manufacturer's model name/number for the
+            device.
     ObjectSummary:
       type: object
+      description: >
+        One entry of a device's Object_List: the BACnetObjectIdentifier of
+        a single object on the device.
       properties:
         type:
           type: string
+          description: The object's BACnet object type name, e.g. `analog-input`.
         instance:
           type: integer
+          description: The object's instance number.
+    ObjectInfo:
+      type: object
+      description: >
+        A default summary of one BACnet object's commonly-useful
+        properties. Properties the object doesn't support (e.g. Units on a
+        Binary object) are omitted rather than erroring.
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          description: The object's BACnet object type name.
+        instance:
+          type: integer
+          description: The object's instance number.
+        object-name:
+          type: string
+          description: >
+            Object_Name — a user-visible name for the object, unique
+            among all objects on the device.
+        present-value:
+          description: >
+            Present_Value — the object's current primary value: a number
+            for Analog objects, an active/inactive state for Binary
+            objects, or a state index for Multi-state objects.
+        description:
+          type: string
+          description: >
+            Description — a free-text, human-readable description of the
+            object.
+        units:
+          description: >
+            Units — the engineering units of Present_Value (BACnet's
+            Engineering_Units enumeration), present on Analog objects.
+        status-flags:
+          type: array
+          items:
+            type: boolean
+          description: >
+            Status_Flags — a 4-element BIT STRING, in order
+            `[in-alarm, fault, overridden, out-of-service]`, summarizing
+            the object's operational health.
     PropertyValue:
       type: object
       properties:
         value:
-          description: A JSON number, string, bool, array, or object, depending on the BACnet property's type.
+          description: >
+            The property's value, translated from its BACnet primitive
+            encoding to JSON: Real/Unsigned/Signed Integer as a number,
+            Boolean as a bool, Enumerated as its numeric value,
+            Character String as a string, Date/Time as a string, Bit
+            String as an array of booleans, Object Identifier as
+            `{type, instance}`, and an array-valued property (e.g.
+            Object_List, Priority_Array) as a JSON array of the above.
     WriteRequest:
       type: object
       required: [value]
       properties:
         value:
           nullable: true
-          description: The value to write; null relinquishes the given priority.
+          description: >
+            The value to write, in the same JSON shape PropertyValue.value
+            uses for reads. `null` relinquishes the given priority (or
+            priority 16 if omitted) on a commandable property, per
+            BACnet's WriteProperty semantics — it does not write a literal
+            null, it clears that slot of the Priority_Array.
         priority:
           type: integer
           minimum: 1
           maximum: 16
+          description: >
+            The BACnet command priority (1-16) to write at, for
+            commandable properties (Present_Value on Output/Value
+            objects). BACnet defines 16 priority levels, 1 being highest
+            (e.g. manual-life-safety) and 16 lowest (manual-operator /
+            default); the value in the lowest-numbered occupied slot of
+            the Priority_Array wins. Defaults to 16 if omitted. Ignored —
+            and rejected with write-access-denied — for non-commandable
+            properties.
     Error:
       type: object
       properties:
         error:
           type: string
+          description: A human-readable description of what went wrong.
         bacnetErrorClass:
           type: string
+          description: >
+            The numeric BACnet Error_Class (ASHRAE 135 clause 21) if the
+            device itself rejected the request, identifying the general
+            category of failure: `0` device, `1` object, `2` property,
+            `3` resources, `4` security, `5` services, `7` communication.
         bacnetErrorCode:
           type: string
+          description: >
+            The numeric BACnet Error_Code (ASHRAE 135 clause 21) giving
+            the specific reason, e.g. `30` timeout, `31` unknown-object,
+            `32` unknown-property, `37` value-out-of-range, `39`
+            write-access-denied.
   responses:
     BadRequest:
       description: Malformed request.
