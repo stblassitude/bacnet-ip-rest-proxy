@@ -20,5 +20,4 @@ PUT  /api/v1/devices/{deviceId}/objects/{objectType}/{instance}/{property}
 
 A running instance of the proxy also serves this same specification at `/openapi.yaml`, with an interactive (non-offline) Swagger UI at `/docs`. The reference below is rendered entirely offline from the same spec, bundled with this documentation site.
 
-<!-- swagger-ui-tag -->
-!!swagger openapi.yaml!!
+<swagger-ui src="openapi.yaml"/>
