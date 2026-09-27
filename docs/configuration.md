@@ -4,7 +4,7 @@ The proxy is configured through a single YAML file, passed with `-config` (defau
 
 A commented example ships as [`config.example.yaml`](https://github.com/stblassitude/bacnet-ip-rest-proxy/blob/main/config.example.yaml) in the repository root, and is installed as the initial `/etc/bacnet-ip-rest-proxy/config.yaml` by the `.deb` package.
 
-The file is checked strictly at startup: an unknown or misspelt key is an error, not silently ignored. Every problem found is reported at once, each with its line number and the setting it concerns, and the proxy refuses to start:
+The file is checked strictly at startup: an unknown or misspelt key is an error, not silently ignored. Every problem found is reported at once, each with its line number and the setting it concerns, and the proxy refuses to start. To check a file without starting the proxy, run `bacnet-ip-rest-proxy -configcheck -config <file>`; it exits non-zero if there are errors:
 
 ```text
 config errors:

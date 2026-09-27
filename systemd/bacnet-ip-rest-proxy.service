@@ -2,9 +2,14 @@
 Description=Bacnet/IP REST Proxy
 Documentation=https://github.com/stblassitude/bacnet-ip-rest-proxy
 After=network.target
+# With RestartSec=5, give up after 5 failed starts in a minute (e.g. an
+# invalid config) instead of retrying forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
+ExecStartPre=/usr/sbin/bacnet-ip-rest-proxy -configcheck -config /etc/bacnet-ip-rest-proxy/config.yaml
 ExecStart=/usr/sbin/bacnet-ip-rest-proxy -config /etc/bacnet-ip-rest-proxy/config.yaml
 Restart=on-failure
 RestartSec=5

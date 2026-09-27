@@ -32,6 +32,7 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to the YAML configuration file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	configCheck := flag.Bool("configcheck", false, "check the configuration file, report any errors, and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -42,6 +43,10 @@ func run() error {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
+	}
+	if *configCheck {
+		fmt.Printf("%s: configuration OK\n", *configPath)
+		return nil
 	}
 
 	localAddr := fmt.Sprintf("0.0.0.0:%d", cfg.Bacnet.LocalPort)

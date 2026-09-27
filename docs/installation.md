@@ -28,6 +28,12 @@ Once configured, enable and start the service:
 sudo systemctl enable --now bacnet-ip-rest-proxy
 ```
 
+The unit checks the configuration (`bacnet-ip-rest-proxy -configcheck`) before starting the proxy, so a broken config shows up as a failed start with the errors in the journal. Run the same check by hand after editing the config:
+
+```sh
+sudo bacnet-ip-rest-proxy -configcheck -config /etc/bacnet-ip-rest-proxy/config.yaml
+```
+
 Check its status and logs with:
 
 ```sh
