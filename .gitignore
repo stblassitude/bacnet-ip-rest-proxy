@@ -1,0 +1,5 @@
+# Local builds of the proxy
+/bacnet-ip-rest-proxy
+/dist/
+# mkdocs output
+/site/

@@ -280,6 +280,28 @@ authorization:
 
 Reading this top to bottom: any JWT not issued by `id.example.com` is denied outright. Admins (matched by JWT `group` claim) get full read/write access. Anyone else connecting from the `10.10.0.0/16` network gets read-only access. Everyone else falls through to the implicit deny.
 
+## Debugging authentication and authorization
+
+Clients only see `401` (no bearer token found) or `403` (token not recognized, or no rule grants access). To see why, start the proxy with `-debugauth`:
+
+```sh
+bacnet-ip-rest-proxy -config /etc/bacnet-ip-rest-proxy/config.yaml -debugauth
+```
+
+For every request it then logs, tied together by a `request` ID:
+
+- **authentication**: how the bearer was recognized (`opaque token "ops"`, `JWT verified (issuer …, RS256)`) or exactly why not (e.g. `token has invalid audience`, `token is expired`, `no signing key with ID …`, or an issuer that isn't configured), the verified JWT claims, and a hint if the token wasn't sent as `Authorization: Bearer <token>`;
+- **rule**: each rule evaluated, whether it applies, and each condition with the value it was compared with, e.g. `jwt.groups="admins": no match (actual ["users"])`;
+- **decision**: the operation, whether it's allowed, and the rule that decided it.
+
+```text
+level=INFO msg="auth debug: authentication" request=…-000001 method=GET path=/api/v1/devices/unit/objects/analog-input/1/present-value client=10.0.0.7 result="JWT verified (issuer \"https://login.example.com/realms/buildings\", RS256)" claims="{\"groups\":[\"users\"],…}"
+level=INFO msg="auth debug: rule" request=…-000001 index=0 rule=admins match=all applies=false action=allow permission=readonly conditions="jwt.groups=\"admins\": no match (actual [\"users\"])"
+level=INFO msg="auth debug: decision" request=…-000001 operation=read-property device=unit allowed=false "decided by"=<implicit-default>
+```
+
+Raw tokens are never logged, but claims are, and they may contain personal data such as names or e-mail addresses; turn `-debugauth` off again once done. With the systemd unit, add the flag to `ExecStart` via `systemctl edit bacnet-ip-rest-proxy` and watch `journalctl -u bacnet-ip-rest-proxy -f`.
+
 ## Permission levels and operations
 
 | Permission | Grants |

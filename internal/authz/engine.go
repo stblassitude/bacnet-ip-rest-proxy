@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"path"
@@ -41,9 +42,39 @@ type Result struct {
 // checked and the last matching rule's result wins. With no matching rules
 // at all, the implicit default is deny.
 func Evaluate(req Request, rules []Rule) Result {
+	return evaluate(req, rules, nil)
+}
+
+// RuleTrace describes how one rule fared in an evaluation, for debugging.
+type RuleTrace struct {
+	Rule       Rule
+	Conditions []ConditionTrace
+	// Applies reports whether the rule's conditions matched per its match
+	// mode, so that it updated the provisional result.
+	Applies bool
+}
+
+// ConditionTrace describes one condition's evaluation.
+type ConditionTrace struct {
+	Condition Condition
+	Matched   bool
+	// Actual is the request value the condition was compared with.
+	Actual string
+}
+
+// Explain evaluates req exactly like Evaluate, and also returns a trace of
+// every rule it looked at (rules after a decisive -now rule aren't).
+func Explain(req Request, rules []Rule) (Result, []RuleTrace) {
+	var trace []RuleTrace
+	result := evaluate(req, rules, &trace)
+	return result, trace
+}
+
+func evaluate(req Request, rules []Rule, trace *[]RuleTrace) Result {
 	result := Result{Allowed: false, RuleName: "<implicit-default>"}
 	for _, rule := range rules {
-		if !evaluateConditions(rule.Conditions, rule.Match, req) {
+		applies := evaluateConditions(rule, req, trace)
+		if !applies {
 			continue
 		}
 		result = Result{
@@ -58,14 +89,31 @@ func Evaluate(req Request, rules []Rule) Result {
 	return result
 }
 
-func evaluateConditions(conditions []Condition, mode MatchMode, req Request) bool {
+func evaluateConditions(rule Rule, req Request, trace *[]RuleTrace) bool {
+	conditions, mode := rule.Conditions, rule.Match
+	var rt *RuleTrace
+	if trace != nil {
+		*trace = append(*trace, RuleTrace{Rule: rule})
+		rt = &(*trace)[len(*trace)-1]
+	}
 	matched := 0
 	for _, c := range conditions {
-		if matchCondition(c, req) {
+		m := matchCondition(c, req)
+		if m {
 			matched++
 		}
+		if rt != nil {
+			rt.Conditions = append(rt.Conditions, ConditionTrace{Condition: c, Matched: m, Actual: actualValue(c, req)})
+		}
 	}
-	total := len(conditions)
+	applies := modeApplies(mode, matched, len(conditions))
+	if rt != nil {
+		rt.Applies = applies
+	}
+	return applies
+}
+
+func modeApplies(mode MatchMode, matched, total int) bool {
 	switch mode {
 	case MatchAll:
 		return matched == total
@@ -119,6 +167,48 @@ func matchCondition(c Condition, req Request) bool {
 		return matchWildcard(c.Value, req.ObjectName)
 	default:
 		return false
+	}
+}
+
+// actualValue describes the request value condition c is compared with.
+func actualValue(c Condition, req Request) string {
+	switch c.Type {
+	case ConditionDevice:
+		if req.Device == "" {
+			return "<no device>"
+		}
+		return req.Device
+	case ConditionIP:
+		if req.ClientIP == nil {
+			return "<unknown>"
+		}
+		return req.ClientIP.String()
+	case ConditionJWT:
+		if req.JWTClaims == nil {
+			return "<no verified JWT>"
+		}
+		claim, ok := req.JWTClaims[c.Field]
+		if !ok {
+			return fmt.Sprintf("<claim %q absent>", c.Field)
+		}
+		if b, err := json.Marshal(claim); err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", claim)
+	case ConditionOperation:
+		return string(req.Operation)
+	case ConditionToken:
+		if req.TokenName == "" {
+			return "<no configured token>"
+		}
+		return req.TokenName
+	case ConditionVariable:
+		if req.ObjectName == "" {
+			return "<not about a single variable>"
+		}
+		return req.ObjectName
+	default:
+		return "<unknown condition type>"
 	}
 }
 

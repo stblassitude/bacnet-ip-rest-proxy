@@ -6,6 +6,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -70,6 +71,9 @@ type Result struct {
 	TokenName string
 	// Claims is set if bearer was a valid JWT.
 	Claims map[string]any
+	// Detail says how the bearer was recognized, or why it wasn't, for
+	// debugging. It never contains the bearer itself.
+	Detail string
 }
 
 // Authenticate inspects a raw bearer credential (the value following
@@ -82,10 +86,10 @@ type Result struct {
 // access is permitted.
 func (a *Authenticator) Authenticate(ctx context.Context, bearer string) Result {
 	if bearer == "" {
-		return Result{}
+		return Result{Detail: "no bearer token"}
 	}
 	if name, ok := a.tokensByValue[bearer]; ok {
-		return Result{TokenName: name}
+		return Result{TokenName: name, Detail: fmt.Sprintf("opaque token %q", name)}
 	}
 
 	// Peek at the (not yet verified) header and issuer only to pick the
@@ -93,33 +97,34 @@ func (a *Authenticator) Authenticate(ctx context.Context, bearer string) Result 
 	unverified := jwt.MapClaims{}
 	tok, _, err := jwt.NewParser().ParseUnverified(bearer, unverified)
 	if err != nil {
-		return Result{}
+		return Result{Detail: "not a configured opaque token, and not a parseable JWT: " + err.Error()}
 	}
-	if strings.HasPrefix(tok.Method.Alg(), "HS") {
+	alg := tok.Method.Alg()
+	if strings.HasPrefix(alg, "HS") {
 		return a.verifyHMAC(bearer)
 	}
 	iss, _ := unverified["iss"].(string)
 	v, ok := a.issuers[iss]
 	if !ok {
-		return Result{}
+		return Result{Detail: fmt.Sprintf("%s-signed JWT from issuer %q, which isn't configured in authentication.oidc (the issuer must match exactly)", alg, iss)}
 	}
 	claims, err := v.verify(ctx, bearer)
 	if err != nil {
-		return Result{}
+		return Result{Detail: fmt.Sprintf("JWT from issuer %q rejected: %v", iss, err)}
 	}
-	return Result{Claims: claims}
+	return Result{Claims: claims, Detail: fmt.Sprintf("JWT verified (issuer %q, %s)", iss, alg)}
 }
 
 func (a *Authenticator) verifyHMAC(bearer string) Result {
 	if a.jwtSecret == nil {
-		return Result{}
+		return Result{Detail: "HMAC-signed JWT, but no authentication.jwtSecret is configured"}
 	}
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(bearer, claims, func(t *jwt.Token) (any, error) {
 		return a.jwtSecret, nil
 	}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}), jwt.WithLeeway(leeway))
 	if err != nil {
-		return Result{}
+		return Result{Detail: "HMAC-signed JWT rejected: " + err.Error()}
 	}
-	return Result{Claims: claims}
+	return Result{Claims: claims, Detail: "JWT verified with authentication.jwtSecret"}
 }

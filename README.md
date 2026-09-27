@@ -37,7 +37,7 @@ bacnet:
 
 ### `authentication.tokens`
 
-A list of API tokens that can be used for authentication. Each entry is a map of a name for the token, and the literal token that can be supplied in an `Authentication: Bearer` header. The value is an opaque string without any further meaning. You will need to add authorization rules that match the names in these tokens.
+A list of API tokens that can be used for authentication. Each entry is a map of a name for the token, and the literal token that can be supplied in an `Authorization: Bearer` header. The value is an opaque string without any further meaning. You will need to add authorization rules that match the names in these tokens.
 
 ### `authorization`
 
@@ -77,7 +77,7 @@ devices:
 
 ## Authentication
 
-The proxy can use `Authentication: Bearer` JWT tokens. The token must validate to be considered valid.
+The proxy can use JWT tokens sent in an `Authorization: Bearer` header. The token must validate to be considered valid.
 
 Access tokens from an OpenID Connect identity provider are verified with the provider's published signing keys, found through its discovery document (`<issuer>/.well-known/openid-configuration`), so key rotation needs no configuration changes:
 

@@ -33,6 +33,7 @@ func run() error {
 	configPath := flag.String("config", "config.yaml", "path to the YAML configuration file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	configCheck := flag.Bool("configcheck", false, "check the configuration file, report any errors, and exit")
+	debugAuth := flag.Bool("debugauth", false, "log each request's authentication result and authorization rule evaluation, including JWT claims")
 	flag.Parse()
 
 	if *showVersion {
@@ -62,6 +63,10 @@ func run() error {
 
 	server := api.NewServer(cfg, client)
 	defer server.Close()
+	if *debugAuth {
+		server.SetAuthDebug(true)
+		slog.Warn("auth debugging enabled: every request's JWT claims and rule evaluation are logged")
+	}
 	httpServer := &http.Server{
 		Addr:    cfg.Listen.Address,
 		Handler: api.NewRouter(server),

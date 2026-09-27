@@ -1,12 +1,17 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
 
+	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/auth"
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/authz"
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/bacnet"
 )
@@ -69,17 +74,22 @@ func bearerToken(r *http.Request) string {
 type caller struct {
 	bearer string
 	req    authz.Request
+	reqID  string // chi request ID, to correlate debug log lines
 }
 
 func (s *Server) newCaller(r *http.Request, device string) caller {
 	bearer := bearerToken(r)
 	authResult := s.authenticator.Authenticate(r.Context(), bearer)
-	return caller{bearer: bearer, req: authz.Request{
+	c := caller{bearer: bearer, reqID: middleware.GetReqID(r.Context()), req: authz.Request{
 		Device:    device,
 		ClientIP:  s.clientIP(r),
 		TokenName: authResult.TokenName,
 		JWTClaims: authResult.Claims,
 	}}
+	if s.authDebug {
+		s.logAuthentication(r, c, authResult)
+	}
+	return c
 }
 
 // allowed reports whether c may perform op on the variable named name ("" for
@@ -159,6 +169,9 @@ func (s *Server) authorizeVariable(w http.ResponseWriter, r *http.Request, devic
 // check evaluates op on the variable named name for c, writing the error
 // response if it's not allowed.
 func (s *Server) check(w http.ResponseWriter, c caller, name string, op authz.Operation) bool {
+	if s.authDebug {
+		s.logAuthorization(c, name, op)
+	}
 	if s.allowed(c, name, op) {
 		return true
 	}
@@ -208,4 +221,61 @@ func recoverJSON(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// logAuthentication logs how a request's credential was (or wasn't)
+// recognized, for -debugauth.
+func (s *Server) logAuthentication(r *http.Request, c caller, res auth.Result) {
+	attrs := []any{"request", c.reqID, "method", r.Method, "path", r.URL.Path, "client", c.req.ClientIP, "result", res.Detail}
+	if c.bearer == "" {
+		switch h := r.Header.Get("Authorization"); {
+		case h != "":
+			attrs = append(attrs, "hint", `the Authorization header doesn't use the "Bearer <token>" scheme`)
+		case r.Header.Get("Authentication") != "":
+			attrs = append(attrs, "hint", "the token was sent in an Authentication header; it must be sent as Authorization: Bearer <token>")
+		default:
+			attrs = append(attrs, "hint", "the request has no Authorization header")
+		}
+	}
+	if res.Claims != nil {
+		if b, err := json.Marshal(res.Claims); err == nil {
+			attrs = append(attrs, "claims", string(b))
+		}
+	}
+	slog.Info("auth debug: authentication", attrs...)
+}
+
+// logAuthorization logs the evaluation of every rule for c performing op on
+// the variable named name, and the resulting decision, for -debugauth.
+func (s *Server) logAuthorization(c caller, name string, op authz.Operation) {
+	req := c.req
+	req.Operation = op
+	req.ObjectName = name
+	result, trace := authz.Explain(req, s.rules)
+	for i, rt := range trace {
+		conds := make([]string, len(rt.Conditions))
+		for j, ct := range rt.Conditions {
+			mark := "no match"
+			if ct.Matched {
+				mark = "match"
+			}
+			target := string(ct.Condition.Type)
+			if ct.Condition.Field != "" {
+				target += "." + ct.Condition.Field
+			}
+			conds[j] = fmt.Sprintf("%s=%q: %s (actual %s)", target, ct.Condition.Value, mark, ct.Actual)
+		}
+		slog.Info("auth debug: rule", "request", c.reqID, "index", i, "rule", rt.Rule.Name,
+			"match", rt.Rule.Match, "applies", rt.Applies, "action", rt.Rule.Action, "permission", rt.Rule.Permission,
+			"conditions", strings.Join(conds, "; "))
+	}
+	allowed := result.Allowed && (op.RequiredPermission() != authz.PermissionReadWrite || result.Permission == authz.PermissionReadWrite)
+	attrs := []any{"request", c.reqID, "operation", op, "device", req.Device, "allowed", allowed, "decided by", result.RuleName}
+	if name != "" {
+		attrs = append(attrs, "variable", name)
+	}
+	if result.Allowed && !allowed {
+		attrs = append(attrs, "reason", "rule allows only "+string(result.Permission)+", operation needs readwrite")
+	}
+	slog.Info("auth debug: decision", attrs...)
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"sort"
@@ -30,6 +31,8 @@ type Server struct {
 	// needsObjectName is set when any rule has a `variable` condition, so
 	// authorizing a single-variable request needs the variable's name.
 	needsObjectName bool
+	// authDebug logs each request's authentication and rule evaluation.
+	authDebug bool
 
 	cache *varCache
 }
@@ -50,6 +53,10 @@ func NewServer(cfg *config.Config, client *bacnet.Client) *Server {
 	s.needsObjectName = authz.UsesCondition(s.rules, authz.ConditionVariable)
 	return s
 }
+
+// SetAuthDebug enables logging each request's authentication result and
+// authorization rule evaluation (including JWT claims), for -debugauth.
+func (s *Server) SetAuthDebug(on bool) { s.authDebug = on }
 
 // Close stops the variable cache's background refresh.
 func (s *Server) Close() {
@@ -158,6 +165,9 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	deviceID := chi.URLParam(r, "deviceId")
 	c := s.newCaller(r, deviceID)
+	if s.authDebug && !s.needsObjectName {
+		s.logAuthorization(c, "", authz.OperationReadProperty)
+	}
 	if !s.needsObjectName && s.variableAccess(c, "") == accessNone {
 		// Denied for every variable alike: don't enumerate the device.
 		writeDenied(w, c.bearer)
@@ -173,6 +183,10 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summaries := s.visibleVariables(c, dv)
+	if s.authDebug {
+		slog.Info("auth debug: object list", "request", c.reqID, "device", deviceID, "visible", len(summaries), "of", len(dv.vars),
+			"note", "each variable is evaluated as read-property (visible) and write-property (readwrite); fetch a single variable to see its rule trace")
+	}
 	if len(summaries) == 0 {
 		// Every device has at least its Device object, so nothing visible
 		// means the caller has no access to this device at all.
