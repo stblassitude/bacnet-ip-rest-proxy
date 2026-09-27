@@ -44,8 +44,9 @@ type apduOrError struct {
 // pendingRequest is an outstanding confirmed request, awaiting a reply
 // from its destination with its invoke ID.
 type pendingRequest struct {
-	to *net.UDPAddr
-	ch chan apduOrError
+	to      *net.UDPAddr
+	service uint8
+	ch      chan apduOrError
 }
 
 type iamEvent struct {
@@ -119,7 +120,11 @@ func (c *Client) handleIncoming(pkt []byte, from *net.UDPAddr) {
 		c.mu.Unlock()
 		// Invoke IDs are only unique per peer, so a reply must also come
 		// from the address the request went to.
-		if ok && req.to.IP.Equal(from.IP) {
+		// Reject/Abort PDUs carry no service choice; the others must answer
+		// the requested service, so a late reply to an earlier request that
+		// reused this invoke ID isn't taken for this one's.
+		sameService := apdu.Type == PDUReject || apdu.Type == PDUAbort || apdu.ServiceChoice == req.service
+		if ok && req.to.IP.Equal(from.IP) && sameService {
 			select {
 			case req.ch <- apduOrError{apdu: apdu}:
 			default: // a duplicate reply to a retransmitted request
@@ -238,7 +243,7 @@ func (c *Client) doConfirmedRequest(ctx context.Context, addr *net.UDPAddr, serv
 		return APDU{}, fmt.Errorf("bacnet: too many outstanding requests")
 	}
 	ch := make(chan apduOrError, 1)
-	c.pending[invokeID] = &pendingRequest{to: addr, ch: ch}
+	c.pending[invokeID] = &pendingRequest{to: addr, service: serviceChoice, ch: ch}
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()

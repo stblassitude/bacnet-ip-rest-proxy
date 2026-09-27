@@ -481,6 +481,11 @@ components:
             String as an array of booleans, Object Identifier as
             `{type, instance}`, and an array-valued property (e.g.
             Object_List, Priority_Array) as a JSON array of the above.
+            Real and Double values that JSON numbers can't express render
+            as the strings `"NaN"`, `"Infinity"` and `"-Infinity"` (BACnet
+            devices commonly report NaN for a failed sensor); JavaScript's
+            `Number()` and Python's `float()` parse all three.
+
             Date and Time render as `YYYY-MM-DD` and `hh:mm:ss.hh`, with
             `*` for unspecified (wildcard) fields.
 
@@ -509,7 +514,9 @@ components:
             uses for reads. `null` relinquishes the given priority (or
             priority 16 if omitted) on a commandable property, per
             BACnet's WriteProperty semantics — it does not write a literal
-            null, it clears that slot of the Priority_Array.
+            null, it clears that slot of the Priority_Array. An analog
+            Present_Value also accepts the strings `"NaN"`, `"Infinity"`
+            and `"-Infinity"`.
         priority:
           type: integer
           minimum: 1

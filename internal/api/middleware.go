@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/authz"
@@ -190,4 +191,21 @@ func writeDenied(w http.ResponseWriter, bearer string) {
 	} else {
 		writeError(w, http.StatusForbidden, "access denied")
 	}
+}
+
+// recoverJSON turns a panic in a handler into a logged 500 with a JSON
+// error body, instead of chi's Recoverer's empty one.
+func recoverJSON(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				slog.Error("panic serving request", "method", r.Method, "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
+				writeError(w, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }

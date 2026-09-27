@@ -20,7 +20,7 @@ var indexPage []byte
 func NewRouter(s *Server) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
+	r.Use(recoverJSON)
 	// Deliberately not using chi's RealIP middleware: it trusts
 	// X-Forwarded-For/X-Real-IP unconditionally, which would let a client
 	// spoof the IP that authz's `ip` condition matches against. clientIP()

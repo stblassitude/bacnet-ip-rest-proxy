@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -823,5 +824,46 @@ func TestReadConstructedProperty(t *testing.T) {
 	want := `[{"items":["2022-09-27","12:30:*.*"],"tag":2},{"data":"05","tag":1}]`
 	if string(got.Value) != want {
 		t.Fatalf("got  %s\nwant %s", got.Value, want)
+	}
+}
+
+func TestNonFiniteRealValues(t *testing.T) {
+	srv, device := newVariableTestServer(t, standardRules(), 0)
+	cases := map[string]float32{
+		`"NaN"`:       float32(math.NaN()),
+		`"Infinity"`:  float32(math.Inf(1)),
+		`"-Infinity"`: float32(math.Inf(-1)),
+		`21.5`:        21.5,
+	}
+	for want, f := range cases {
+		device.SetProperty(bacnet.ObjectAnalogInput, 1, bacnet.PropPresentValue, bacnet.RealValue(f))
+		resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: got status %d, want 200", want, resp.StatusCode)
+		}
+		var got struct {
+			Value json.RawMessage `json:"value"`
+		}
+		decodeJSON(t, resp, &got)
+		if string(got.Value) != want {
+			t.Errorf("got value %s, want %s", got.Value, want)
+		}
+	}
+}
+
+func TestWriteNaN(t *testing.T) {
+	srv, _ := newVariableTestServer(t, variableRules(), 0) // readwrite on "Damper Cmd"
+	body := []byte(`{"value": "NaN", "priority": 8}`)
+	resp := doRequest(t, srv, http.MethodPut, "/api/v1/devices/unit/objects/analog-output/2/present-value", "readonly-token", body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("got status %d, want 204", resp.StatusCode)
+	}
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-output/2/present-value", "readonly-token", nil)
+	var got struct {
+		Value any `json:"value"`
+	}
+	decodeJSON(t, resp, &got)
+	if got.Value != "NaN" {
+		t.Errorf("read back %v, want \"NaN\"", got.Value)
 	}
 }

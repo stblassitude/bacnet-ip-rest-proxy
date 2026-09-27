@@ -4,15 +4,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/bacnet"
 )
 
+// writeJSON encodes body before sending anything, so a value JSON can't
+// represent yields a 500 with an error body rather than a 200 with an
+// empty one.
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		slog.Error("encoding JSON response", "err", err)
+		status = http.StatusInternalServerError
+		data, _ = json.Marshal(errorBody{Error: "could not encode response: " + err.Error()})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

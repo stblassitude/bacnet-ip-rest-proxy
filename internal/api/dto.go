@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/bacnet"
 )
@@ -26,9 +27,9 @@ func jsonValue(v bacnet.Value) any {
 	case bacnet.KindSigned:
 		return v.Signed
 	case bacnet.KindReal:
-		return v.Real
+		return jsonFloat(float64(v.Real), v.Real)
 	case bacnet.KindDouble:
-		return v.Double
+		return jsonFloat(v.Double, v.Double)
 	case bacnet.KindOctetString:
 		return v.Octets
 	case bacnet.KindCharacterString:
@@ -54,6 +55,41 @@ func jsonValue(v bacnet.Value) any {
 	default:
 		return nil
 	}
+}
+
+// jsonFloat returns orig (a float32 or float64, so float32 values keep their
+// shortest representation) unless f is NaN or infinite, which JSON numbers
+// can't express: those become the strings "NaN", "Infinity" and
+// "-Infinity", which JavaScript's Number() and Python's float() parse.
+func jsonFloat(f float64, orig any) any {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	}
+	return orig
+}
+
+// parseJSONFloat accepts a JSON number, or one of the strings jsonFloat
+// produces for non-finite values.
+func parseJSONFloat(raw any) (float64, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case string:
+		switch v {
+		case "NaN":
+			return math.NaN(), true
+		case "Infinity":
+			return math.Inf(1), true
+		case "-Infinity":
+			return math.Inf(-1), true
+		}
+	}
+	return 0, false
 }
 
 // field formats a date/time field zero-padded to width, or "*" if it's
@@ -131,9 +167,9 @@ func valueForWrite(objType bacnet.ObjectType, prop bacnet.PropertyIdentifier, ra
 	if prop == bacnet.PropPresentValue {
 		switch objType {
 		case bacnet.ObjectAnalogInput, bacnet.ObjectAnalogOutput, bacnet.ObjectAnalogValue:
-			f, ok := raw.(float64)
+			f, ok := parseJSONFloat(raw)
 			if !ok {
-				return bacnet.Value{}, fmt.Errorf("present-value for an analog object must be a number")
+				return bacnet.Value{}, fmt.Errorf(`present-value for an analog object must be a number, or "NaN", "Infinity" or "-Infinity"`)
 			}
 			return bacnet.RealValue(float32(f)), nil
 		case bacnet.ObjectBinaryInput, bacnet.ObjectBinaryOutput, bacnet.ObjectBinaryValue:
