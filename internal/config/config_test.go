@@ -305,3 +305,30 @@ func TestEmptyConfigLoads(t *testing.T) {
 		t.Fatalf("an empty file should load with defaults: %v", err)
 	}
 }
+
+func TestOIDCConfigValidation(t *testing.T) {
+	path := writeTemp(t, `
+authentication:
+  oidc:
+    - issuer: https://id.example.com/realms/buildings
+      audience: bacnet-proxy
+    - issuer: http://id.example.com
+      audience: x
+    - issuer: https://id.example.com/realms/buildings
+    - audience: y
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	for _, want := range []string{
+		path + `:6: authentication.oidc[1].issuer: "http://id.example.com" must use https`,
+		path + `:8: authentication.oidc[2].issuer: duplicate issuer`,
+		path + `:8: authentication.oidc[2].audience: required`,
+		path + `:9: authentication.oidc[3].issuer: required`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("got %q, want it to contain %q", err, want)
+		}
+	}
+}

@@ -32,6 +32,9 @@ authentication:
   tokens:
     - name: ops
       token: "opaque-bearer-token"
+  oidc:
+    - issuer: https://login.example.com/realms/buildings
+      audience: bacnet-proxy
   jwtSecret: "shared-secret-for-hmac-sha256"
 
 authorization:
@@ -110,16 +113,43 @@ Bearer credentials, presented as `Authorization: Bearer <value>`, are checked in
           token: "a-long-random-opaque-string"
     ```
 
-2. **JWT** — if the bearer doesn't match a configured opaque token, it's parsed and verified as a JWT signed with HMAC-SHA256, using the shared secret `authentication.jwtSecret`:
+2. **JWT access token from an OpenID Connect issuer** — if the bearer doesn't match an opaque token and is a JWT signed with an asymmetric algorithm, it's verified against the configured issuer named in its `iss` claim:
+
+    ```yaml
+    authentication:
+      oidc:
+        - issuer: https://login.example.com/realms/buildings
+          audience: bacnet-proxy
+    ```
+
+    The proxy fetches `<issuer>/.well-known/openid-configuration`, checks that the document names exactly this issuer, and loads the signing keys from its `jwks_uri`. Nothing about the keys needs to be configured, and key rotation is picked up automatically:
+
+    - Keys are fetched at startup, and again whenever they're more than an hour old (in the background; tokens keep being verified with the current keys meanwhile).
+    - A token signed with a key ID the proxy doesn't know yet, which is how a rotation shows up, triggers an immediate re-fetch. These re-fetches happen at most once a minute, so tokens with made-up key IDs can't make the proxy flood the issuer.
+    - If a fetch fails, the previous keys stay in use and a warning is logged.
+
+    A token is accepted only if all of these hold:
+
+    | Check | Requirement |
+    | --- | --- |
+    | Signature | RS256/384/512, PS256/384/512, ES256/384/512 or EdDSA, with a key from the issuer's JWKS matching the token's `kid` |
+    | `iss` | exactly the configured `issuer` |
+    | `aud` | contains the configured `audience` |
+    | `exp` | present, and not in the past |
+    | `nbf`, `iat` | if present, not in the future |
+
+    Times are checked with one minute of leeway for clock skew. `audience` is required: without it, an access token the same issuer made for any other application would be accepted here. Configure your identity provider to put this value into the access tokens it issues for the proxy's clients (e.g. an audience mapper in Keycloak, or the application ID URI in Entra ID). `issuer` must be an `https` URL (plain `http` is only allowed for `localhost`, for testing). Several issuers can be listed.
+
+3. **JWT signed with a shared secret** — a JWT signed with HMAC (HS256/384/512) is verified with `authentication.jwtSecret` instead, and never against an issuer's keys:
 
     ```yaml
     authentication:
       jwtSecret: "a long random shared secret"
     ```
 
-    If `jwtSecret` is unset, JWT bearers are never considered valid — only opaque tokens are recognized.
+    If `jwtSecret` is unset, HMAC-signed JWTs are never considered valid. Unlike issuer tokens, their `iss` and `aud` aren't checked; use `jwt` authorization conditions for that.
 
-A request that matches neither still reaches the authorization engine, just with no token name or JWT claims to match against — meaning only rules with no such conditions (or IP-only rules) can grant it access.
+A request that matches none of these still reaches the authorization engine, just with no token name or JWT claims to match against — meaning only rules with no such conditions (or IP-only rules) can grant it access.
 
 ## `authorization`
 

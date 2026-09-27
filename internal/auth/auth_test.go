@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 func TestAuthenticateOpaqueToken(t *testing.T) {
 	a := NewAuthenticator(Options{Tokens: []Token{{Name: "alice", Value: "s3cr3t"}}})
 
-	result := a.Authenticate("s3cr3t")
+	result := a.Authenticate(context.Background(), "s3cr3t")
 	if result.TokenName != "alice" {
 		t.Fatalf("got token name %q, want alice", result.TokenName)
 	}
@@ -21,7 +22,7 @@ func TestAuthenticateOpaqueToken(t *testing.T) {
 
 func TestAuthenticateUnknownBearer(t *testing.T) {
 	a := NewAuthenticator(Options{Tokens: []Token{{Name: "alice", Value: "s3cr3t"}}})
-	result := a.Authenticate("not-a-known-token")
+	result := a.Authenticate(context.Background(), "not-a-known-token")
 	if result.TokenName != "" || result.Claims != nil {
 		t.Fatalf("expected empty result for unrecognized bearer, got %+v", result)
 	}
@@ -29,7 +30,7 @@ func TestAuthenticateUnknownBearer(t *testing.T) {
 
 func TestAuthenticateEmptyBearer(t *testing.T) {
 	a := NewAuthenticator(Options{})
-	result := a.Authenticate("")
+	result := a.Authenticate(context.Background(), "")
 	if result.TokenName != "" || result.Claims != nil {
 		t.Fatalf("expected empty result for empty bearer, got %+v", result)
 	}
@@ -53,7 +54,7 @@ func TestAuthenticateValidJWT(t *testing.T) {
 		"exp":   time.Now().Add(time.Hour).Unix(),
 	})
 
-	result := a.Authenticate(token)
+	result := a.Authenticate(context.Background(), token)
 	if result.Claims == nil {
 		t.Fatal("expected claims, got nil")
 	}
@@ -72,7 +73,7 @@ func TestAuthenticateExpiredJWT(t *testing.T) {
 		"exp": time.Now().Add(-time.Hour).Unix(),
 	})
 
-	result := a.Authenticate(token)
+	result := a.Authenticate(context.Background(), token)
 	if result.Claims != nil {
 		t.Fatalf("expired JWT should not validate, got claims %v", result.Claims)
 	}
@@ -82,7 +83,7 @@ func TestAuthenticateWrongSignature(t *testing.T) {
 	a := NewAuthenticator(Options{JWTSecret: "correct-secret"})
 	token := signHS256(t, "wrong-secret", jwt.MapClaims{"iss": "id.example.com"})
 
-	result := a.Authenticate(token)
+	result := a.Authenticate(context.Background(), token)
 	if result.Claims != nil {
 		t.Fatalf("JWT with wrong signature should not validate, got claims %v", result.Claims)
 	}
@@ -92,7 +93,7 @@ func TestAuthenticateJWTWithoutSecretConfigured(t *testing.T) {
 	a := NewAuthenticator(Options{})
 	token := signHS256(t, "whatever", jwt.MapClaims{"iss": "id.example.com"})
 
-	result := a.Authenticate(token)
+	result := a.Authenticate(context.Background(), token)
 	if result.Claims != nil {
 		t.Fatalf("JWT should not validate when no secret is configured, got claims %v", result.Claims)
 	}
@@ -105,7 +106,7 @@ func TestAuthenticateOpaqueTokenTakesPrecedenceOverJWTShape(t *testing.T) {
 		Tokens:    []Token{{Name: "alice", Value: "a.b.c"}},
 		JWTSecret: "test-secret",
 	})
-	result := a.Authenticate("a.b.c")
+	result := a.Authenticate(context.Background(), "a.b.c")
 	if result.TokenName != "alice" {
 		t.Fatalf("got %+v, want opaque token match", result)
 	}
@@ -119,7 +120,7 @@ func TestAuthenticateRejectsNoneAlgorithm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign none: %v", err)
 	}
-	result := a.Authenticate(unsigned)
+	result := a.Authenticate(context.Background(), unsigned)
 	if result.Claims != nil {
 		t.Fatalf("alg=none token must not validate, got claims %v", result.Claims)
 	}

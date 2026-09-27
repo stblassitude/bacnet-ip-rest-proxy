@@ -19,6 +19,11 @@ authentication:
   tokens:
     - name: example-token
       token: "change-me-to-a-long-random-string"
+  # Accept access tokens from an OpenID Connect identity provider; signing
+  # keys are discovered and rotated automatically.
+  # oidc:
+  #   - issuer: https://login.example.com/realms/buildings
+  #     audience: bacnet-proxy
   # jwtSecret: "change-me-to-a-long-random-shared-secret"
 
 # No rules are configured below, so every request is denied by the implicit

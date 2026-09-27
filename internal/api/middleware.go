@@ -73,7 +73,7 @@ type caller struct {
 
 func (s *Server) newCaller(r *http.Request, device string) caller {
 	bearer := bearerToken(r)
-	authResult := s.authenticator.Authenticate(bearer)
+	authResult := s.authenticator.Authenticate(r.Context(), bearer)
 	return caller{bearer: bearer, req: authz.Request{
 		Device:    device,
 		ClientIP:  s.clientIP(r),

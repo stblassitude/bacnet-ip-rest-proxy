@@ -77,14 +77,27 @@ devices:
 
 ## Authentication
 
-The proxy can use `Authentication: Bearer` JWT tokens. The token must validate to be considered valid. JWT signatures are verified with an HMAC-SHA256 shared secret configured as `authentication.jwtSecret`:
+The proxy can use `Authentication: Bearer` JWT tokens. The token must validate to be considered valid.
+
+Access tokens from an OpenID Connect identity provider are verified with the provider's published signing keys, found through its discovery document (`<issuer>/.well-known/openid-configuration`), so key rotation needs no configuration changes:
+
+```yaml
+authentication:
+  oidc:
+    - issuer: https://login.example.com/realms/buildings
+      audience: bacnet-proxy   # required; must be in the token's aud claim
+```
+
+The token's `iss` must equal `issuer`, its `aud` must contain `audience`, and it must not be expired. See [the configuration docs](docs/configuration.md#authentication) for the details.
+
+Alternatively, JWTs signed with HMAC (HS256/384/512) are verified with a shared secret:
 
 ```yaml
 authentication:
   jwtSecret: "a long random shared secret"
 ```
 
-If `authentication.jwtSecret` is not set, JWT bearers are never considered valid (only opaque tokens from `authentication.tokens` are recognized).
+If neither is configured, JWT bearers are never considered valid (only opaque tokens from `authentication.tokens` are recognized).
 
 The proxy also allows custom API tokens, see `authentication.tokens`.
 

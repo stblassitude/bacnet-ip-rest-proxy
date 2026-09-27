@@ -81,9 +81,20 @@ type BacnetConfig struct {
 
 type AuthenticationConfig struct {
 	Tokens []TokenConfig `yaml:"tokens"`
-	// JWTSecret is the HMAC-SHA256 shared secret used to verify JWT
-	// bearers. See README for why this is the chosen verification scheme.
+	// JWTSecret is the HMAC shared secret used to verify HS256/384/512
+	// JWT bearers.
 	JWTSecret string `yaml:"jwtSecret"`
+	// OIDC lists the OpenID Connect issuers whose JWT access tokens are
+	// accepted, verified with keys found via each issuer's discovery
+	// document.
+	OIDC []OIDCConfig `yaml:"oidc"`
+}
+
+type OIDCConfig struct {
+	// Issuer is the issuer identifier URL, exactly as in tokens' iss claim.
+	Issuer string `yaml:"issuer"`
+	// Audience must be one of the tokens' aud values.
+	Audience string `yaml:"audience"`
 }
 
 type TokenConfig struct {
@@ -188,6 +199,22 @@ func (c *Config) Validate() error {
 		seenTokenNames[tok.Name] = true
 	}
 
+	seenIssuers := make(map[string]bool, len(c.Authentication.OIDC))
+	for i, o := range c.Authentication.OIDC {
+		path := fmt.Sprintf("authentication.oidc[%d]", i)
+		if o.Issuer == "" {
+			errs = append(errs, fieldErrorf(path+".issuer", "required"))
+		} else if err := auth.CheckFetchURL(o.Issuer); err != nil {
+			errs = append(errs, fieldErrorf(path+".issuer", "%v", err))
+		} else if seenIssuers[o.Issuer] {
+			errs = append(errs, fieldErrorf(path+".issuer", "duplicate issuer %q", o.Issuer))
+		}
+		seenIssuers[o.Issuer] = true
+		if o.Audience == "" {
+			errs = append(errs, fieldErrorf(path+".audience", "required: without it, access tokens the issuer made for any other application would be accepted"))
+		}
+	}
+
 	for i, rule := range c.Authorization.Rules {
 		errs = append(errs, rule.validate(fmt.Sprintf("authorization.rules[%d]", i))...)
 	}
@@ -239,6 +266,16 @@ func (c *Config) AuthTokens() []auth.Token {
 		tokens = append(tokens, auth.Token{Name: t.Name, Value: t.Token})
 	}
 	return tokens
+}
+
+// AuthIssuers converts authentication.oidc into the form internal/auth
+// expects.
+func (c *Config) AuthIssuers() []auth.Issuer {
+	issuers := make([]auth.Issuer, 0, len(c.Authentication.OIDC))
+	for _, o := range c.Authentication.OIDC {
+		issuers = append(issuers, auth.Issuer{URL: o.Issuer, Audience: o.Audience})
+	}
+	return issuers
 }
 
 // AuthzRules converts authorization.rules into the form internal/authz

@@ -41,7 +41,7 @@ func NewServer(cfg *config.Config, client *bacnet.Client) *Server {
 	s := &Server{
 		client:         client,
 		devices:        cfg.Devices,
-		authenticator:  auth.NewAuthenticator(auth.Options{Tokens: cfg.AuthTokens(), JWTSecret: cfg.Authentication.JWTSecret}),
+		authenticator:  auth.NewAuthenticator(auth.Options{Tokens: cfg.AuthTokens(), JWTSecret: cfg.Authentication.JWTSecret, Issuers: cfg.AuthIssuers()}),
 		rules:          cfg.AuthzRules(),
 		requestTimeout: cfg.Bacnet.Timeout.AsDuration(),
 		trustedProxies: cfg.TrustedProxyNets(),
