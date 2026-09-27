@@ -35,6 +35,19 @@ systemctl status bacnet-ip-rest-proxy
 journalctl -u bacnet-ip-rest-proxy -f
 ```
 
+## From a container image
+
+Each release also publishes a multi-stage-built, distroless container image to the GitHub Container Registry:
+
+```sh
+docker run -d --name bacnet-ip-rest-proxy \
+  -p 8443:8443 \
+  -v /path/to/config.yaml:/etc/bacnet-ip-rest-proxy/config.yaml:ro \
+  ghcr.io/stblassitude/bacnet-ip-rest-proxy:latest
+```
+
+The image runs as a non-root user and ships a copy of `config.example.yaml` at `/etc/bacnet-ip-rest-proxy/config.yaml` by default — mount your own file over it as shown above, or build your own image `FROM` it with a `COPY`. Pin a specific version instead of `latest` for anything other than quick testing, e.g. `ghcr.io/stblassitude/bacnet-ip-rest-proxy:1.0.0`.
+
 ## From the standalone binary
 
 Download `bacnet-ip-rest-proxy_<version>_linux_amd64` from the release, make it executable, and run it directly with `-config`:
@@ -70,4 +83,11 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/bacnet-ip-rest-proxy ./cm
 go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 VERSION=0.0.0-local ARCH=amd64 nfpm pkg --packager deb --config packaging/nfpm.yaml \
   --target dist/bacnet-ip-rest-proxy_0.0.0-local_amd64.deb
+```
+
+## Building the container image locally
+
+```sh
+docker build --build-arg VERSION=0.0.0-local -t bacnet-ip-rest-proxy:local .
+docker run -d -p 8443:8443 bacnet-ip-rest-proxy:local
 ```
