@@ -77,6 +77,7 @@ func newTestServer(t *testing.T, rules []authz.Rule, tokens []config.TokenConfig
 	}
 
 	apiServer := api.NewServer(cfg, client)
+	t.Cleanup(apiServer.Close)
 	httpServer := httptest.NewServer(api.NewRouter(apiServer))
 	t.Cleanup(httpServer.Close)
 	return httpServer, mockServer.Addr().String()
@@ -276,7 +277,9 @@ func newTestServerWithTrustedProxies(t *testing.T, rules []authz.Rule, trustedPr
 		cfg.Authorization.Rules = append(cfg.Authorization.Rules, rc)
 	}
 
-	httpServer := httptest.NewServer(api.NewRouter(api.NewServer(cfg, client)))
+	apiServer := api.NewServer(cfg, client)
+	t.Cleanup(apiServer.Close)
+	httpServer := httptest.NewServer(api.NewRouter(apiServer))
 	t.Cleanup(httpServer.Close)
 	return httpServer
 }
@@ -460,5 +463,250 @@ func TestOpenAPIAndSwaggerUIServed(t *testing.T) {
 	resp = doRequest(t, srv, http.MethodGet, "/docs/index.html", "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /docs/index.html got status %d, want 200", resp.StatusCode)
+	}
+}
+
+// variableRules gives "reader" read access to everything, readwrite to
+// "Damper*" variables, and hides "Secret*" variables from it entirely.
+func variableRules() []authz.Rule {
+	return []authz.Rule{
+		{
+			Name:       "reader may read everything",
+			Conditions: []authz.Condition{{Type: authz.ConditionToken, Value: "reader"}},
+			Match:      authz.MatchAll,
+			Permission: authz.PermissionReadOnly,
+			Action:     authz.ActionAllow,
+		},
+		{
+			Name:       "reader may operate dampers",
+			Conditions: []authz.Condition{{Type: authz.ConditionToken, Value: "reader"}, {Type: authz.ConditionVariable, Value: "Damper*"}},
+			Match:      authz.MatchAll,
+			Permission: authz.PermissionReadWrite,
+			Action:     authz.ActionAllow,
+		},
+		{
+			Name:       "nobody sees secrets",
+			Conditions: []authz.Condition{{Type: authz.ConditionVariable, Value: "Secret*"}},
+			Match:      authz.MatchAll,
+			Action:     authz.ActionDenyNow,
+		},
+	}
+}
+
+// newVariableTestServer is newTestServer with a third, "Secret Setpoint"
+// object, and returns the mock device so tests can change it.
+func newVariableTestServer(t *testing.T, rules []authz.Rule, refresh time.Duration) (*httptest.Server, *bacnetmock.Device) {
+	t.Helper()
+	device := bacnetmock.NewDevice(2003)
+	device.AddObject(bacnet.ObjectAnalogInput, 1, map[bacnet.PropertyIdentifier]bacnet.Value{
+		bacnet.PropObjectName:   bacnet.CharStringValue("Room Temp"),
+		bacnet.PropPresentValue: bacnet.RealValue(21.5),
+	})
+	device.AddObject(bacnet.ObjectAnalogOutput, 2, map[bacnet.PropertyIdentifier]bacnet.Value{
+		bacnet.PropObjectName:   bacnet.CharStringValue("Damper Cmd"),
+		bacnet.PropPresentValue: bacnet.RealValue(0),
+	})
+	device.AddObject(bacnet.ObjectAnalogValue, 3, map[bacnet.PropertyIdentifier]bacnet.Value{
+		bacnet.PropObjectName:   bacnet.CharStringValue("Secret Setpoint"),
+		bacnet.PropPresentValue: bacnet.RealValue(42),
+	})
+	mockServer, err := bacnetmock.Listen("127.0.0.1:0", device)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = mockServer.Close() })
+
+	client, err := bacnet.NewClient(bacnet.ClientOptions{LocalAddr: "127.0.0.1:0", Timeout: 500 * time.Millisecond, Retries: 1})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	cfg := &config.Config{
+		Devices:        map[string]string{"unit": mockServer.Addr().String()},
+		Authentication: config.AuthenticationConfig{Tokens: []config.TokenConfig{readonlyToken()}},
+		Bacnet:         config.BacnetConfig{Timeout: config.Duration(2 * time.Second), CacheRefresh: config.Duration(refresh)},
+	}
+	for _, rule := range rules {
+		rc := config.RuleConfig{Name: rule.Name, Match: string(rule.Match), Permission: string(rule.Permission), Action: string(rule.Action)}
+		for _, c := range rule.Conditions {
+			rc.Conditions = append(rc.Conditions, config.ConditionConfig{Type: string(c.Type), Field: c.Field, Value: c.Value})
+		}
+		cfg.Authorization.Rules = append(cfg.Authorization.Rules, rc)
+	}
+
+	apiServer := api.NewServer(cfg, client)
+	t.Cleanup(apiServer.Close)
+	httpServer := httptest.NewServer(api.NewRouter(apiServer))
+	t.Cleanup(httpServer.Close)
+	return httpServer, device
+}
+
+func decodeJSON(t *testing.T, resp *http.Response, out any) {
+	t.Helper()
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type listedObject struct {
+	Type     string `json:"type"`
+	Instance uint32 `json:"instance"`
+	Name     string `json:"name"`
+	Access   string `json:"access"`
+}
+
+func listObjects(t *testing.T, srv *httptest.Server) map[string]listedObject {
+	t.Helper()
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET objects: got status %d, want 200", resp.StatusCode)
+	}
+	var list []listedObject
+	decodeJSON(t, resp, &list)
+	byName := make(map[string]listedObject, len(list))
+	for _, o := range list {
+		byName[o.Name] = o
+	}
+	return byName
+}
+
+func TestObjectListFilteredByVariableAccess(t *testing.T) {
+	srv, _ := newVariableTestServer(t, variableRules(), 0)
+	objs := listObjects(t, srv)
+
+	want := map[string]string{"mock-device": "readonly", "Room Temp": "readonly", "Damper Cmd": "readwrite"}
+	if len(objs) != len(want) {
+		t.Fatalf("got objects %v, want exactly %v", objs, want)
+	}
+	for name, access := range want {
+		if objs[name].Access != access {
+			t.Errorf("%q: got access %q, want %q", name, objs[name].Access, access)
+		}
+	}
+	if o := objs["Damper Cmd"]; o.Type != "analog-output" || o.Instance != 2 {
+		t.Errorf("Damper Cmd listed as %s/%d, want its real type analog-output/2", o.Type, o.Instance)
+	}
+}
+
+func TestVariableAccessOnSingleObjects(t *testing.T) {
+	srv, _ := newVariableTestServer(t, variableRules(), 0)
+
+	var pv struct {
+		Value  any    `json:"value"`
+		Access string `json:"access"`
+	}
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read Room Temp: got status %d, want 200", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &pv)
+	if pv.Access != "readonly" {
+		t.Errorf("Room Temp: got access %q, want readonly", pv.Access)
+	}
+
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-output/2", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("summary of Damper Cmd: got status %d, want 200", resp.StatusCode)
+	}
+	var summary map[string]any
+	decodeJSON(t, resp, &summary)
+	if summary["access"] != "readwrite" {
+		t.Errorf("Damper Cmd summary: got access %v, want readwrite", summary["access"])
+	}
+
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-value/3/present-value", "readonly-token", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read Secret Setpoint: got status %d, want 403", resp.StatusCode)
+	}
+
+	body, _ := json.Marshal(map[string]any{"value": 50.0})
+	resp = doRequest(t, srv, http.MethodPut, "/api/v1/devices/unit/objects/analog-output/2/present-value", "readonly-token", body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("write Damper Cmd: got status %d, want 204", resp.StatusCode)
+	}
+	resp = doRequest(t, srv, http.MethodPut, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("write Room Temp: got status %d, want 403", resp.StatusCode)
+	}
+
+	// An object the device doesn't list can't be named, so it's denied
+	// rather than evaluated as if no variable condition matched.
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-value/99/present-value", "readonly-token", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown object: got status %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestObjectListPropertyFiltered(t *testing.T) {
+	srv, _ := newVariableTestServer(t, variableRules(), 0)
+
+	var pv struct {
+		Value []map[string]any `json:"value"`
+	}
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/device/2003/object-list", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read object-list: got status %d, want 200", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &pv)
+	if len(pv.Value) != 3 {
+		t.Fatalf("got %d object-list entries %v, want 3 (Secret Setpoint hidden)", len(pv.Value), pv.Value)
+	}
+	for _, v := range pv.Value {
+		if v["type"] == "analog-value" {
+			t.Errorf("hidden object leaked via object-list: %v", v)
+		}
+	}
+
+	var count struct {
+		Value any `json:"value"`
+	}
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/device/2003/object-list?index=0", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read object-list[0]: got status %d, want 200", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &count)
+	if count.Value != 3.0 {
+		t.Errorf("object-list[0]: got %v, want the filtered length 3", count.Value)
+	}
+}
+
+func TestRulesWithoutVariableConditionApplyToAllVariables(t *testing.T) {
+	srv, _ := newVariableTestServer(t, standardRules(), 0)
+	objs := listObjects(t, srv)
+	if len(objs) != 4 {
+		t.Fatalf("got %d objects, want all 4", len(objs))
+	}
+	for name, o := range objs {
+		if o.Access != "readonly" {
+			t.Errorf("%q: got access %q, want readonly", name, o.Access)
+		}
+	}
+}
+
+func TestVariableCacheRefreshPicksUpRename(t *testing.T) {
+	srv, device := newVariableTestServer(t, variableRules(), 100*time.Millisecond)
+	if _, ok := listObjects(t, srv)["Room Temp"]; !ok {
+		t.Fatal("Room Temp should be listed before the rename")
+	}
+
+	device.SetProperty(bacnet.ObjectAnalogInput, 1, bacnet.PropObjectName, bacnet.CharStringValue("Secret Room Temp"))
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		objs := listObjects(t, srv)
+		if _, ok := objs["Room Temp"]; !ok {
+			if _, leaked := objs["Secret Room Temp"]; leaked {
+				t.Fatal("renamed object should now be hidden")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cache never refreshed the renamed object")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read renamed object: got status %d, want 403", resp.StatusCode)
 	}
 }

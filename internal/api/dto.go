@@ -60,7 +60,8 @@ func jsonValues(values []bacnet.Value) any {
 
 // propertyValue is the response body of GET .../{property}.
 type propertyValue struct {
-	Value any `json:"value"`
+	Value  any    `json:"value"`
+	Access access `json:"access"`
 }
 
 // writeRequest is the request body of PUT .../{property}.
@@ -74,8 +75,12 @@ type writeRequest struct {
 
 // objectSummary is one entry of GET /devices/{id}/objects.
 type objectSummary struct {
-	Type     string `json:"type"`
-	Instance uint32 `json:"instance"`
+	Type        string `json:"type"`
+	Instance    uint32 `json:"instance"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Units       any    `json:"units,omitempty"`
+	Access      access `json:"access"`
 }
 
 // deviceSummary is one entry of GET /devices. It deliberately omits the

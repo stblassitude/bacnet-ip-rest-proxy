@@ -294,3 +294,23 @@ func TestREADMEExampleRules(t *testing.T) {
 		t.Fatalf("with the tautological condition removed, a bogus issuer should be denied, got %+v", result)
 	}
 }
+
+func TestVariableCondition(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"Room Temp", "Room Temp", true},
+		{"Room Temp", "Room*", true},
+		{"Room Temp", "Damper*", false},
+		{"", "*", false}, // no targeted object never matches
+	}
+	for _, c := range cases {
+		rule := Rule{Conditions: []Condition{{Type: ConditionVariable, Value: c.value}}, Match: MatchAll, Action: ActionAllowNow, Permission: PermissionReadOnly}
+		result := Evaluate(Request{ObjectName: c.name}, []Rule{rule})
+		if result.Allowed != c.want {
+			t.Errorf("variable %q against object-name %q: got allowed=%v, want %v", c.value, c.name, result.Allowed, c.want)
+		}
+	}
+}

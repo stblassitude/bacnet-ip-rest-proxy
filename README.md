@@ -32,6 +32,7 @@ bacnet:
   localPort: 0     # local UDP port to bind; 0 (default) picks an ephemeral port
   timeout: 3s       # default 3s; per-attempt reply timeout
   retries: 3        # default 3; retries per request before giving up
+  cacheRefresh: 60s # default 60s; how often each device's variable list and names are re-read
 ```
 
 ### `authentication.tokens`
@@ -108,6 +109,17 @@ A list of conditions that should be matched. Each entry is a type/value pair. Wi
 * type `jwt`: the additional key `field` picks the field in the JWT payload
 * type `operation`: any of the Bacnet/IP operations: `who-is`, `read-property`, `read-property-multiple`, `write-property`, or the synthetic `list-devices` (for `GET /devices`, which makes no BACnet call)
 * type `token`: the name of a token defined in the `authentication.tokens` section.
+* type `variable`: the name of a BACnet object (its `object-name`, as reported by the device). Rules are evaluated separately for each variable; a rule without a `variable` condition applies to all variables alike.
+
+### Variables
+
+The proxy enumerates each device's objects ("variables") on first use and re-reads the list and every object's name every `bacnet.cacheRefresh` (default 60s). Authorization is applied per variable, using those cached names:
+
+* writes to a variable are denied unless the caller has `readwrite` access to it;
+* responses leave out variables the caller can't read: the object list, a device's `object-list` property, and single-object reads (`403`);
+* every returned variable carries an `access` field, `readonly` or `readwrite`, with the caller's effective right on it.
+
+When any rule has a `variable` condition, requests for objects that aren't in the cached list (e.g. created since the last refresh) are denied until the next refresh, and a renamed object keeps its old name for authorization for up to one refresh interval.
 
 ### `permission`
 

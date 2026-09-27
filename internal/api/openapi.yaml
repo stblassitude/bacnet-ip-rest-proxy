@@ -67,9 +67,13 @@ paths:
       tags: [objects]
       summary: List a device's BACnet objects
       description: >
-        Reads the device's Object_List property: the complete list of
-        BACnetObjectIdentifiers for every object present on the device,
-        including the device object itself.
+        Lists the device's objects (its Object_List, including the device
+        object itself) with each object's name, description and units.
+        Served from the proxy's variable cache, which re-enumerates each
+        device every `bacnet.cacheRefresh` (default 60s), so objects
+        added, removed or renamed on the device appear here after at most
+        one refresh. Objects the caller may not read are left out; `403`
+        (or `401`) is returned only if the caller may read none of them.
       operationId: listObjects
       parameters:
         - $ref: "#/components/parameters/DeviceId"
@@ -366,8 +370,7 @@ components:
           type: integer
           description: >
             The device's BACnet device instance number, resolved via a
-            unicast Who-Is/I-Am exchange and cached for the life of the
-            proxy process.
+            unicast Who-Is/I-Am exchange and kept in the variable cache.
         object-name:
           type: string
           description: >
@@ -381,11 +384,24 @@ components:
           description: >
             Model_Name — the manufacturer's model name/number for the
             device.
+        access:
+          $ref: "#/components/schemas/Access"
+    Access:
+      type: string
+      enum: [readonly, readwrite]
+      description: >
+        The caller's effective right on this object (variable), from the
+        authorization rules: `readonly` if it may read but not write it,
+        `readwrite` if it may also write it. Objects the caller may not
+        read at all are never returned. This reflects the proxy's
+        authorization only; the device may still reject a write, e.g. to
+        a property that isn't writable.
     ObjectSummary:
       type: object
       description: >
         One entry of a device's Object_List: the BACnetObjectIdentifier of
-        a single object on the device.
+        a single object on the device, with the metadata the proxy caches
+        for it.
       properties:
         type:
           type: string
@@ -393,6 +409,19 @@ components:
         instance:
           type: integer
           description: The object's instance number.
+        name:
+          type: string
+          description: >
+            Object_Name — a user-visible name for the object, unique
+            among all objects on the device. This is what `variable`
+            authorization conditions match against.
+        description:
+          type: string
+          description: Description, if the object has one.
+        units:
+          description: Units (Engineering_Units), if the object has them.
+        access:
+          $ref: "#/components/schemas/Access"
     ObjectInfo:
       type: object
       description: >
@@ -434,6 +463,8 @@ components:
             Status_Flags — a 4-element BIT STRING, in order
             `[in-alarm, fault, overridden, out-of-service]`, summarizing
             the object's operational health.
+        access:
+          $ref: "#/components/schemas/Access"
     PropertyValue:
       type: object
       properties:
@@ -446,6 +477,11 @@ components:
             String as an array of booleans, Object Identifier as
             `{type, instance}`, and an array-valued property (e.g.
             Object_List, Priority_Array) as a JSON array of the above.
+            A device object's Object_List only contains the objects the
+            caller may read, and `?index=` is applied to that filtered
+            list (index 0 is its length).
+        access:
+          $ref: "#/components/schemas/Access"
     WriteRequest:
       type: object
       required: [value]

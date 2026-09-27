@@ -56,6 +56,7 @@ func run() error {
 	defer client.Close()
 
 	server := api.NewServer(cfg, client)
+	defer server.Close()
 	httpServer := &http.Server{
 		Addr:    cfg.Listen.Address,
 		Handler: api.NewRouter(server),

@@ -13,6 +13,7 @@ bacnet:
   localPort: 0 # 0 picks an ephemeral local UDP port
   timeout: 3s
   retries: 3
+  cacheRefresh: 60s # how often each device's variable list and names are re-read
 
 authentication:
   tokens:

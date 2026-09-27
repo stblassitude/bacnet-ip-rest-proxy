@@ -20,6 +20,10 @@ type Request struct {
 	// JWTClaims holds the parsed claims of a validated JWT bearer, or nil
 	// if the bearer wasn't a valid JWT.
 	JWTClaims map[string]any
+	// ObjectName is the object-name property of the BACnet object the
+	// request targets, as reported by the device, or "" if the request
+	// doesn't target a single object.
+	ObjectName string
 }
 
 // Result is the outcome of evaluating a Request against a rule set.
@@ -108,6 +112,11 @@ func matchCondition(c Condition, req Request) bool {
 			return false
 		}
 		return matchWildcard(c.Value, req.TokenName)
+	case ConditionVariable:
+		if req.ObjectName == "" {
+			return false
+		}
+		return matchWildcard(c.Value, req.ObjectName)
 	default:
 		return false
 	}

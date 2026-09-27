@@ -18,6 +18,7 @@ bacnet:
   localPort: 0
   timeout: 3s
   retries: 3
+  cacheRefresh: 60s
 
 authentication:
   tokens:
@@ -72,6 +73,7 @@ Settings for the BACnet/IP client the proxy uses to talk to devices.
 | `bacnet.localPort` | `0` | local UDP port to bind for outgoing BACnet/IP traffic; `0` picks an ephemeral port |
 | `bacnet.timeout` | `3s` | per-attempt reply timeout (Go duration syntax, e.g. `3s`, `500ms`) |
 | `bacnet.retries` | `3` | retries per request before giving up |
+| `bacnet.cacheRefresh` | `60s` | how often each device's variables are re-enumerated in the background (see [Variables](#variables)) |
 
 The proxy only ever initiates **unicast** requests to configured devices — it never broadcasts — so binding a non-standard local port is fine; it does not need to match the BACnet/IP standard port 47808 the way a passive/discoverable device would.
 
@@ -159,8 +161,27 @@ Each condition is a `type`/`value` pair (plus `field` for `jwt`). **Wildcards ap
 | `jwt` | a claim in the verified JWT payload | requires `field` (the claim name); if the claim is a JSON array (e.g. a `groups` claim), the condition matches if *any* element matches |
 | `operation` | the BACnet operation the request maps to | one of `who-is`, `read-property`, `read-property-multiple`, `write-property`, or the synthetic `list-devices` (for `GET /devices`, which makes no BACnet call) |
 | `token` | the `name` of a matched entry in `authentication.tokens` | never matches if the bearer wasn't a recognized opaque token (there's no such thing as "no token" matching a wildcard) |
+| `variable` | a BACnet object's `object-name`, as reported by the device | rules are evaluated separately for each variable (see [Variables](#variables)); a rule without a `variable` condition applies to all variables alike. Requests not about variables (`GET /devices`) never match |
 
 A `jwt` or `token` condition never matches a request that didn't carry the corresponding credential — even against a `*` wildcard.
+
+### Variables
+
+A device's BACnet objects are its *variables*. The proxy enumerates them the first time a device is used — its object-list, plus each object's `object-name`, `description` and `units` — and re-enumerates every [`bacnet.cacheRefresh`](#bacnet) (default `60s`) in the background. A failed refresh keeps the previous list; devices nobody has asked about for ten refresh intervals are dropped from the cache. Live values such as `present-value` are never cached.
+
+The rules are evaluated per variable, against its cached name:
+
+| Request | Effect |
+| --- | --- |
+| `PUT .../{property}` | denied unless the caller has `readwrite` access to that variable |
+| `GET /devices/{id}/objects` | only variables the caller can read are listed; `401`/`403` if there are none |
+| `GET .../{type}/{instance}[/{property}]`, `GET /devices/{id}` | `401`/`403` if the caller can't read that variable (the device object, for `GET /devices/{id}`) |
+| `GET .../device/{instance}/object-list` | only variables the caller can read are included; `?index=` applies to that filtered list |
+
+A caller can *read* a variable if the rules allow it `read-property` on it, and can *write* it if they also allow `write-property` with `readwrite` permission. Every returned variable carries an `access` field, `readonly` or `readwrite`, reflecting that; objects keep their real BACnet type.
+
+!!! note "Fail-closed on unknown names"
+    When any rule contains a `variable` condition, an object that isn't in the cached list — the device can't be reached, or the object was created since the last refresh — is denied rather than evaluated without a name, so a deny rule keyed on a name can't be bypassed. Likewise, a renamed object is authorized under its old name for up to one refresh interval.
 
 ### Matching modes
 

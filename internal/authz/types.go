@@ -45,6 +45,7 @@ const (
 	ConditionJWT       ConditionType = "jwt"
 	ConditionOperation ConditionType = "operation"
 	ConditionToken     ConditionType = "token"
+	ConditionVariable  ConditionType = "variable"
 )
 
 // Condition is a single type/value (or type/field/value, for jwt) test.
@@ -63,6 +64,20 @@ type Rule struct {
 	Match      MatchMode
 	Permission Permission
 	Action     Action
+}
+
+// UsesCondition reports whether any rule has a condition of type t, so
+// callers can skip gathering request data (e.g. a BACnet object-name read
+// for ConditionVariable) that no rule will ever look at.
+func UsesCondition(rules []Rule, t ConditionType) bool {
+	for _, r := range rules {
+		for _, c := range r.Conditions {
+			if c.Type == t {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Operation identifies which BACnet service (or synthetic proxy operation)

@@ -68,6 +68,11 @@ type BacnetConfig struct {
 	LocalPort int      `yaml:"localPort"`
 	Timeout   Duration `yaml:"timeout"`
 	Retries   int      `yaml:"retries"`
+	// CacheRefresh is how often each device's variables (object-list plus
+	// per-object name/description/units) are re-enumerated in the
+	// background. Authorization of `variable` conditions and object
+	// listings are served from this cache.
+	CacheRefresh Duration `yaml:"cacheRefresh"`
 }
 
 type AuthenticationConfig struct {
@@ -128,6 +133,9 @@ func (c *Config) applyDefaults() {
 	if c.Bacnet.Retries == 0 {
 		c.Bacnet.Retries = 3
 	}
+	if c.Bacnet.CacheRefresh == 0 {
+		c.Bacnet.CacheRefresh = Duration(60 * time.Second)
+	}
 }
 
 // Validate checks the configuration for internal consistency: valid
@@ -138,6 +146,10 @@ func (c *Config) Validate() error {
 		if c.Listen.TLS.CertFile == "" || c.Listen.TLS.KeyFile == "" {
 			return fmt.Errorf("listen.tls.enabled requires certFile and keyFile")
 		}
+	}
+
+	if c.Bacnet.CacheRefresh < 0 {
+		return fmt.Errorf("bacnet.cacheRefresh must be positive")
 	}
 
 	for _, p := range c.Listen.TrustedProxies {
@@ -186,7 +198,7 @@ func (r RuleConfig) validate() error {
 	}
 	for _, c := range r.Conditions {
 		switch authz.ConditionType(c.Type) {
-		case authz.ConditionDevice, authz.ConditionIP, authz.ConditionOperation, authz.ConditionToken:
+		case authz.ConditionDevice, authz.ConditionIP, authz.ConditionOperation, authz.ConditionToken, authz.ConditionVariable:
 		case authz.ConditionJWT:
 			if c.Field == "" {
 				return fmt.Errorf("jwt condition requires a field")
