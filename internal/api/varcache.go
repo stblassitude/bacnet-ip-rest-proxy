@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -14,6 +16,16 @@ import (
 // ReadPropertyMultiple while enumerating a device, keeping each reply well
 // inside a single unsegmented APDU on typical devices.
 const rpmChunk = 16
+
+// indexChunk is how many object-list elements are requested per
+// ReadPropertyMultiple when the whole list doesn't fit in one APDU (each
+// element takes about a dozen bytes of the reply).
+const indexChunk = 50
+
+// minLoadTimeout bounds how long enumerating one device may take, when
+// that's longer than the refresh interval: large devices read piecewise
+// can need many round trips.
+const minLoadTimeout = 5 * time.Minute
 
 // idleRefreshes is how many refresh intervals a device may go unrequested
 // before its cache entry is dropped (and its background refresh stops).
@@ -159,17 +171,17 @@ func (c *varCache) refreshAll() {
 // each object's object-name/description/units. Objects whose name can't
 // be read are left out, so name-based authorization fails closed for them.
 func (c *varCache) load(hostPort string) (*deviceVars, error) {
-	ctx, cancel := context.WithTimeout(c.ctx, c.interval)
+	ctx, cancel := context.WithTimeout(c.ctx, max(c.interval, minLoadTimeout))
 	defer cancel()
 
 	iam, err := c.client.WhoIs(ctx, hostPort)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("who-is: %w", err)
 	}
-	devObj := bacnet.ObjectIdentifier{Type: bacnet.ObjectDevice, Instance: iam.Device.Instance}
-	list, err := c.client.ReadProperty(ctx, hostPort, devObj, bacnet.PropObjectList, nil)
+	l := &loader{client: c.client, hostPort: hostPort}
+	list, err := l.readObjectList(ctx, iam.Device.Instance)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading object-list: %w", err)
 	}
 
 	all := make([]variable, 0, len(list))
@@ -180,8 +192,8 @@ func (c *varCache) load(hostPort string) (*deviceVars, error) {
 	}
 	for start := 0; start < len(all); start += rpmChunk {
 		chunk := all[start:min(start+rpmChunk, len(all))]
-		if err := c.readMetadata(ctx, hostPort, chunk); err != nil {
-			return nil, err
+		if err := l.readMetadata(ctx, chunk); err != nil {
+			return nil, fmt.Errorf("reading object names: %w", err)
 		}
 	}
 
@@ -196,54 +208,113 @@ func (c *varCache) load(hostPort string) (*deviceVars, error) {
 	for i := range dv.vars {
 		dv.byID[dv.vars[i].Object] = &dv.vars[i]
 	}
+	slog.Debug("enumerated device variables", "device", hostPort, "count", len(dv.vars))
 	return dv, nil
 }
 
-// readMetadata fills in chunk's metadata with one ReadPropertyMultiple,
-// falling back to reading just object-name per object for devices that
-// don't support ReadPropertyMultiple.
-func (c *varCache) readMetadata(ctx context.Context, hostPort string, chunk []variable) error {
-	specs := make([]bacnet.ReadAccessSpec, len(chunk))
-	for i, v := range chunk {
-		specs[i] = bacnet.ReadAccessSpec{Object: v.Object, Properties: []bacnet.PropertyReference{
-			{Property: bacnet.PropObjectName},
-			{Property: bacnet.PropDescription},
-			{Property: bacnet.PropUnits},
-		}}
-	}
-	results, err := c.client.ReadPropertyMultiple(ctx, hostPort, specs)
-	if err == nil {
-		byID := make(map[bacnet.ObjectIdentifier]*variable, len(chunk))
-		for i := range chunk {
-			byID[chunk[i].Object] = &chunk[i]
-		}
-		for _, res := range results {
-			v := byID[res.Object]
-			if v == nil {
-				continue
-			}
-			for _, pr := range res.Results {
-				if pr.Err != nil {
-					continue
-				}
-				switch pr.Property {
-				case bacnet.PropObjectName:
-					v.Name = charString(pr.Values)
-				case bacnet.PropDescription:
-					v.Description = charString(pr.Values)
-				case bacnet.PropUnits:
-					v.Units = pr.Values
-				}
-			}
-		}
-		return nil
-	}
-	if ctx.Err() != nil {
-		return err
+// readObjectList reads hostPort's object-list (see loader.readObjectList).
+func (c *varCache) readObjectList(ctx context.Context, hostPort string, instance uint32) ([]bacnet.Value, error) {
+	return (&loader{client: c.client, hostPort: hostPort}).readObjectList(ctx, instance)
+}
+
+// loader reads one device's variables, working within the client's
+// limitation to unsegmented replies (at most one 1476-byte APDU each).
+type loader struct {
+	client   *bacnet.Client
+	hostPort string
+	noRPM    bool // the device rejected ReadPropertyMultiple as unrecognized
+}
+
+// readObjectList reads the Device object's object-list whole if the reply
+// fits in one APDU, and otherwise element by element: index 0 for the
+// length, then batches of indexes per ReadPropertyMultiple (or one
+// ReadProperty per index for devices without ReadPropertyMultiple).
+func (l *loader) readObjectList(ctx context.Context, instance uint32) ([]bacnet.Value, error) {
+	devObj := bacnet.ObjectIdentifier{Type: bacnet.ObjectDevice, Instance: instance}
+	list, err := l.client.ReadProperty(ctx, l.hostPort, devObj, bacnet.PropObjectList, nil)
+	if err == nil || !retryPiecewise(ctx, err) {
+		return list, err
 	}
 
+	zero := uint32(0)
+	lenValues, err := l.client.ReadProperty(ctx, l.hostPort, devObj, bacnet.PropObjectList, &zero)
+	if err != nil {
+		return nil, fmt.Errorf("reading its length: %w", err)
+	}
+	if len(lenValues) != 1 || lenValues[0].Kind != bacnet.KindUnsigned {
+		return nil, fmt.Errorf("unexpected object-list length %v", lenValues)
+	}
+	n := uint32(lenValues[0].Unsigned)
+
+	list = make([]bacnet.Value, 0, n)
+	for start := uint32(1); start <= n; start += indexChunk {
+		end := min(start+indexChunk-1, n)
+		values, err := l.readIndexes(ctx, devObj, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("reading elements %d-%d: %w", start, end, err)
+		}
+		list = append(list, values...)
+	}
+	return list, nil
+}
+
+func (l *loader) readIndexes(ctx context.Context, obj bacnet.ObjectIdentifier, start, end uint32) ([]bacnet.Value, error) {
+	if !l.noRPM {
+		refs := make([]bacnet.PropertyReference, 0, end-start+1)
+		for i := start; i <= end; i++ {
+			refs = append(refs, bacnet.PropertyReference{Property: bacnet.PropObjectList, ArrayIndex: &i})
+		}
+		results, err := l.client.ReadPropertyMultiple(ctx, l.hostPort, []bacnet.ReadAccessSpec{{Object: obj, Properties: refs}})
+		if err == nil {
+			var values []bacnet.Value
+			for _, res := range results {
+				for _, pr := range res.Results {
+					if pr.Err != nil {
+						return nil, pr.Err
+					}
+					values = append(values, pr.Values...)
+				}
+			}
+			return values, nil
+		}
+		if !l.noteRPMFailure(ctx, err) {
+			return nil, err
+		}
+	}
+	var values []bacnet.Value
+	for i := start; i <= end; i++ {
+		v, err := l.client.ReadProperty(ctx, l.hostPort, obj, bacnet.PropObjectList, &i)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, v...)
+	}
+	return values, nil
+}
+
+// readMetadata fills in chunk's metadata with ReadPropertyMultiple, halving
+// the chunk whenever the reply doesn't fit in one APDU, and falling back to
+// reading just object-name per object for devices that don't support
+// ReadPropertyMultiple.
+func (l *loader) readMetadata(ctx context.Context, chunk []variable) error {
+	if !l.noRPM {
+		err := l.readMetadataRPM(ctx, chunk)
+		if err == nil {
+			return nil
+		}
+		if !l.noteRPMFailure(ctx, err) {
+			return err
+		}
+		if !l.noRPM && len(chunk) > 1 {
+			mid := len(chunk) / 2
+			if err := l.readMetadata(ctx, chunk[:mid]); err != nil {
+				return err
+			}
+			return l.readMetadata(ctx, chunk[mid:])
+		}
+	}
 	for i := range chunk {
-		values, err := c.client.ReadProperty(ctx, hostPort, chunk[i].Object, bacnet.PropObjectName, nil)
+		values, err := l.client.ReadProperty(ctx, l.hostPort, chunk[i].Object, bacnet.PropObjectName, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -253,6 +324,69 @@ func (c *varCache) readMetadata(ctx context.Context, hostPort string, chunk []va
 		chunk[i].Name = charString(values)
 	}
 	return nil
+}
+
+func (l *loader) readMetadataRPM(ctx context.Context, chunk []variable) error {
+	specs := make([]bacnet.ReadAccessSpec, len(chunk))
+	for i, v := range chunk {
+		specs[i] = bacnet.ReadAccessSpec{Object: v.Object, Properties: []bacnet.PropertyReference{
+			{Property: bacnet.PropObjectName},
+			{Property: bacnet.PropDescription},
+			{Property: bacnet.PropUnits},
+		}}
+	}
+	results, err := l.client.ReadPropertyMultiple(ctx, l.hostPort, specs)
+	if err != nil {
+		return err
+	}
+	byID := make(map[bacnet.ObjectIdentifier]*variable, len(chunk))
+	for i := range chunk {
+		byID[chunk[i].Object] = &chunk[i]
+	}
+	for _, res := range results {
+		v := byID[res.Object]
+		if v == nil {
+			continue
+		}
+		for _, pr := range res.Results {
+			if pr.Err != nil {
+				continue
+			}
+			switch pr.Property {
+			case bacnet.PropObjectName:
+				v.Name = charString(pr.Values)
+			case bacnet.PropDescription:
+				v.Description = charString(pr.Values)
+			case bacnet.PropUnits:
+				v.Units = pr.Values
+			}
+		}
+	}
+	return nil
+}
+
+// noteRPMFailure classifies a failed ReadPropertyMultiple: it records a
+// device that doesn't support the service at all, and reports whether a
+// smaller or per-property retry may succeed.
+func (l *loader) noteRPMFailure(ctx context.Context, err error) bool {
+	if rej, ok := errors.AsType[*bacnet.RejectError](err); ok && rej.Reason == bacnet.RejectReasonUnrecognizedService {
+		l.noRPM = true
+		return true
+	}
+	return retryPiecewise(ctx, err)
+}
+
+// retryPiecewise reports whether a failed read may succeed when split into
+// smaller reads: the reply didn't fit in one APDU (an abort), or the device
+// didn't answer at all, which some devices do for oversized replies.
+func retryPiecewise(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if _, ok := errors.AsType[*bacnet.AbortError](err); ok {
+		return true
+	}
+	return errors.Is(err, bacnet.ErrTimeout)
 }
 
 func charString(values []bacnet.Value) string {

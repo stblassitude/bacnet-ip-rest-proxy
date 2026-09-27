@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -708,5 +709,95 @@ func TestVariableCacheRefreshPicksUpRename(t *testing.T) {
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("read renamed object: got status %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestLargeDeviceVariableRules mirrors a Niagara station exposing hundreds
+// of points: the object-list, and the metadata of a chunk of objects, don't
+// fit in a single unsegmented APDU, so enumeration must read them piecewise.
+func TestLargeDeviceVariableRules(t *testing.T) {
+	const prefix = "Drivers.BacnetNetwork.BOILER_PLANT_CONTROL.points."
+	rules := []authz.Rule{
+		{
+			Name:       "read-only access",
+			Conditions: []authz.Condition{{Type: authz.ConditionToken, Value: "reader"}},
+			Match:      authz.MatchAll,
+			Permission: authz.PermissionReadOnly,
+			Action:     authz.ActionAllow,
+		},
+		{
+			Name: "read-write access",
+			Conditions: []authz.Condition{
+				{Type: authz.ConditionToken, Value: "reader"},
+				{Type: authz.ConditionDevice, Value: "unit"},
+				{Type: authz.ConditionVariable, Value: prefix + "TOWER FAN SS"},
+			},
+			Match:      authz.MatchAll,
+			Permission: authz.PermissionReadWrite,
+			Action:     authz.ActionAllow,
+		},
+	}
+	srv, device := newVariableTestServer(t, rules, 0)
+	for i := range 400 {
+		device.AddObject(bacnet.ObjectAnalogValue, uint32(100+i), map[bacnet.PropertyIdentifier]bacnet.Value{
+			bacnet.PropObjectName:   bacnet.CharStringValue(fmt.Sprintf("%sPOINT %03d", prefix, i)),
+			bacnet.PropDescription:  bacnet.CharStringValue("a reasonably long description of this particular point"),
+			bacnet.PropPresentValue: bacnet.RealValue(float32(i)),
+		})
+	}
+	device.AddObject(bacnet.ObjectAnalogOutput, 900, map[bacnet.PropertyIdentifier]bacnet.Value{
+		bacnet.PropObjectName:   bacnet.CharStringValue(prefix + "TOWER FAN SS"),
+		bacnet.PropPresentValue: bacnet.RealValue(0),
+	})
+
+	objs := listObjects(t, srv)
+	if len(objs) != 405 {
+		t.Fatalf("got %d objects, want 405", len(objs))
+	}
+	if a := objs[prefix+"TOWER FAN SS"].Access; a != "readwrite" {
+		t.Errorf("TOWER FAN SS: got access %q, want readwrite", a)
+	}
+	if a := objs[prefix+"POINT 123"].Access; a != "readonly" {
+		t.Errorf("POINT 123: got access %q, want readonly", a)
+	}
+
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-value/150/present-value", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read a point: got status %d, want 200", resp.StatusCode)
+	}
+	body, _ := json.Marshal(map[string]any{"value": 1.0})
+	resp = doRequest(t, srv, http.MethodPut, "/api/v1/devices/unit/objects/analog-output/900/present-value", "readonly-token", body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("write TOWER FAN SS: got status %d, want 204", resp.StatusCode)
+	}
+	resp = doRequest(t, srv, http.MethodPut, "/api/v1/devices/unit/objects/analog-value/150/present-value", "readonly-token", body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("write a read-only point: got status %d, want 403", resp.StatusCode)
+	}
+
+	var pv struct {
+		Value []any `json:"value"`
+	}
+	resp = doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/device/2003/object-list", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read the full object-list: got status %d, want 200", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &pv)
+	if len(pv.Value) != 405 {
+		t.Errorf("object-list: got %d entries, want 405", len(pv.Value))
+	}
+}
+
+func TestEnumerationFailureSurfacesBACnetErrorToAuthenticatedCallers(t *testing.T) {
+	srv, _ := newVariableTestServer(t, variableRules(), 0)
+	// A literal address no BACnet device answers on.
+	path := "/api/v1/devices/127.0.0.1:1/objects/analog-input/1/present-value"
+	resp := doRequest(t, srv, http.MethodGet, path, "readonly-token", nil)
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("recognized token: got status %d, want 504", resp.StatusCode)
+	}
+	resp = doRequest(t, srv, http.MethodGet, path, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous: got status %d, want 401", resp.StatusCode)
 	}
 }

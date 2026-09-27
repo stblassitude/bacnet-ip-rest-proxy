@@ -175,7 +175,7 @@ A `jwt` or `token` condition never matches a request that didn't carry the corre
 
 ### Variables
 
-A device's BACnet objects are its *variables*. The proxy enumerates them the first time a device is used — its object-list, plus each object's `object-name`, `description` and `units` — and re-enumerates every [`bacnet.cacheRefresh`](#bacnet) (default `60s`) in the background. A failed refresh keeps the previous list; devices nobody has asked about for ten refresh intervals are dropped from the cache. Live values such as `present-value` are never cached.
+A device's BACnet objects are its *variables*. The proxy enumerates them the first time a device is used — its object-list, plus each object's `object-name`, `description` and `units` — and re-enumerates every [`bacnet.cacheRefresh`](#bacnet) (default `60s`) in the background. Devices with more objects than fit in a single BACnet reply (the proxy doesn't support segmented replies) are read piecewise, element by element and in smaller batches, so the first enumeration of a large device can take a few seconds. A failed refresh keeps the previous list; devices nobody has asked about for ten refresh intervals are dropped from the cache. Live values such as `present-value` are never cached.
 
 The rules are evaluated per variable, against its cached name:
 
@@ -189,7 +189,7 @@ The rules are evaluated per variable, against its cached name:
 A caller can *read* a variable if the rules allow it `read-property` on it, and can *write* it if they also allow `write-property` with `readwrite` permission. Every returned variable carries an `access` field, `readonly` or `readwrite`, reflecting that; objects keep their real BACnet type.
 
 !!! note "Fail-closed on unknown names"
-    When any rule contains a `variable` condition, an object that isn't in the cached list — the device can't be reached, or the object was created since the last refresh — is denied rather than evaluated without a name, so a deny rule keyed on a name can't be bypassed. Likewise, a renamed object is authorized under its old name for up to one refresh interval.
+    When any rule contains a `variable` condition, an object that isn't in the cached list — the device can't be reached, or the object was created since the last refresh — is refused rather than evaluated without a name, so a deny rule keyed on a name can't be bypassed. A caller with a recognized token or JWT then gets the underlying BACnet error (`502`/`504`) so device problems aren't mistaken for permission problems; anyone else gets `401`/`403`. The failure is logged as a warning. Likewise, a renamed object is authorized under its old name for up to one refresh interval.
 
 ### Matching modes
 

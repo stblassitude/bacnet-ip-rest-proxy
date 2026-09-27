@@ -26,6 +26,15 @@ const (
 	ErrorCodeUnknownProperty   ErrorCode = 32
 	ErrorCodeValueOutOfRange   ErrorCode = 37
 	ErrorCodeWriteAccessDenied ErrorCode = 39
+	ErrorCodeInvalidArrayIndex ErrorCode = 42
+)
+
+// Abort and reject reasons (ASHRAE 135 clause 21) the proxy needs to
+// recognize.
+const (
+	AbortReasonBufferOverflow           uint8 = 1
+	AbortReasonSegmentationNotSupported uint8 = 4
+	RejectReasonUnrecognizedService     uint8 = 9
 )
 
 // BACnetError is the payload of a BACnet Error-PDU.

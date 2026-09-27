@@ -45,13 +45,13 @@ func writeBACnetError(w http.ResponseWriter, err error) {
 
 	var rejErr *bacnet.RejectError
 	if errors.As(err, &rejErr) {
-		writeError(w, http.StatusBadGateway, rejErr.Error())
+		writeError(w, http.StatusBadGateway, err.Error()) // keeps any context, e.g. "reading object-list: …"
 		return
 	}
 
 	var abortErr *bacnet.AbortError
 	if errors.As(err, &abortErr) {
-		writeError(w, http.StatusBadGateway, abortErr.Error())
+		writeError(w, http.StatusBadGateway, err.Error()) // keeps any context, e.g. "reading object-list: …"
 		return
 	}
 

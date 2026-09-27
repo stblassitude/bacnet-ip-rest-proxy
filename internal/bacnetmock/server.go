@@ -129,7 +129,7 @@ func (s *Server) handleReadProperty(apdu bacnet.APDU, from *net.UDPAddr) {
 		s.log.Debug("malformed ReadProperty request", "err", err)
 		return
 	}
-	values, bacErr := s.device.readProperty(req.Object.Type, req.Object.Instance, req.Property)
+	values, bacErr := s.device.readProperty(req.Object.Type, req.Object.Instance, req.Property, req.ArrayIndex)
 	if bacErr != nil {
 		s.sendError(apdu.InvokeID, apdu.ServiceChoice, from, bacErr)
 		return
@@ -140,8 +140,7 @@ func (s *Server) handleReadProperty(apdu bacnet.APDU, from *net.UDPAddr) {
 		ArrayIndex: req.ArrayIndex,
 		Values:     values,
 	})
-	pkt := bacnet.EncodeUnicastPacket(bacnet.EncodeComplexACKAPDU(apdu.InvokeID, apdu.ServiceChoice, ack))
-	_, _ = s.conn.WriteToUDP(pkt, from)
+	s.sendComplexACK(apdu, ack, from)
 }
 
 func (s *Server) handleWriteProperty(apdu bacnet.APDU, from *net.UDPAddr) {
@@ -168,7 +167,7 @@ func (s *Server) handleReadPropertyMultiple(apdu bacnet.APDU, from *net.UDPAddr)
 	for _, spec := range specs {
 		result := bacnet.ReadAccessResult{Object: spec.Object}
 		for _, ref := range spec.Properties {
-			values, bacErr := s.device.readProperty(spec.Object.Type, spec.Object.Instance, ref.Property)
+			values, bacErr := s.device.readProperty(spec.Object.Type, spec.Object.Instance, ref.Property, ref.ArrayIndex)
 			result.Results = append(result.Results, bacnet.PropertyResult{
 				Property:   ref.Property,
 				ArrayIndex: ref.ArrayIndex,
@@ -179,6 +178,20 @@ func (s *Server) handleReadPropertyMultiple(apdu bacnet.APDU, from *net.UDPAddr)
 		results = append(results, result)
 	}
 	ack := bacnet.EncodeReadPropertyMultipleACK(results)
-	pkt := bacnet.EncodeUnicastPacket(bacnet.EncodeComplexACKAPDU(apdu.InvokeID, apdu.ServiceChoice, ack))
-	_, _ = s.conn.WriteToUDP(pkt, from)
+	s.sendComplexACK(apdu, ack, from)
+}
+
+// maxAPDU is the largest APDU the proxy's client accepts (it declares
+// max-APDU-length-accepted 1476 and no segmentation).
+const maxAPDU = 1476
+
+// sendComplexACK sends ack, or, like a real device that can't segment a
+// reply the client won't accept segmented, an Abort with reason
+// segmentation-not-supported when it doesn't fit in one APDU.
+func (s *Server) sendComplexACK(req bacnet.APDU, ack []byte, from *net.UDPAddr) {
+	reply := bacnet.EncodeComplexACKAPDU(req.InvokeID, req.ServiceChoice, ack)
+	if len(reply) > maxAPDU {
+		reply = bacnet.EncodeAbortAPDU(req.InvokeID, bacnet.AbortReasonSegmentationNotSupported)
+	}
+	_, _ = s.conn.WriteToUDP(bacnet.EncodeUnicastPacket(reply), from)
 }

@@ -139,8 +139,7 @@ func (s *Server) authorizeVariable(w http.ResponseWriter, r *http.Request, devic
 	}
 	dv, err := s.cache.get(s.resolveDevice(device))
 	if err != nil {
-		slog.Warn("denying request: could not enumerate device variables for authorization", "device", device, "err", err)
-		writeDenied(w, c.bearer)
+		s.writeEnumerationError(w, c, device, err)
 		return c, "", false
 	}
 	id := dv.deviceObject()
@@ -168,6 +167,20 @@ func (s *Server) check(w http.ResponseWriter, c caller, name string, op authz.Op
 	}
 	writeDenied(w, c.bearer)
 	return false
+}
+
+// writeEnumerationError refuses a request whose authorization needed the
+// device's variables, which couldn't be read. A caller with a recognized
+// credential gets the underlying BACnet error, so a misbehaving device
+// doesn't masquerade as a permissions problem; anyone else just gets
+// 401/403, without learning anything about the device.
+func (s *Server) writeEnumerationError(w http.ResponseWriter, c caller, device string, err error) {
+	slog.Warn("refusing request: could not enumerate device variables for authorization", "device", device, "err", err)
+	if c.req.TokenName != "" || c.req.JWTClaims != nil {
+		writeBACnetError(w, err)
+		return
+	}
+	writeDenied(w, c.bearer)
 }
 
 func writeDenied(w http.ResponseWriter, bearer string) {

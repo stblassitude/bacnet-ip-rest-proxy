@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net"
 	"net/http"
 	"sort"
@@ -167,8 +166,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	dv, err := s.cache.get(s.resolveDevice(deviceID))
 	if err != nil {
 		if s.needsObjectName {
-			slog.Warn("denying request: could not enumerate device variables for authorization", "device", deviceID, "err", err)
-			writeDenied(w, c.bearer)
+			s.writeEnumerationError(w, c, deviceID, err)
 			return
 		}
 		writeBACnetError(w, err)
@@ -291,7 +289,13 @@ func (s *Server) handleGetProperty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	values, err := s.client.ReadProperty(ctx, hostPort, bacnet.ObjectIdentifier{Type: objType, Instance: instance}, prop, arrayIndex)
+	var values []bacnet.Value
+	if objType == bacnet.ObjectDevice && prop == bacnet.PropObjectList && arrayIndex == nil {
+		// Read piecewise if the whole list doesn't fit in one reply.
+		values, err = s.cache.readObjectList(ctx, hostPort, instance)
+	} else {
+		values, err = s.client.ReadProperty(ctx, hostPort, bacnet.ObjectIdentifier{Type: objType, Instance: instance}, prop, arrayIndex)
+	}
 	if err != nil {
 		writeBACnetError(w, err)
 		return
@@ -310,7 +314,7 @@ func (s *Server) serveFilteredObjectList(w http.ResponseWriter, ctx context.Cont
 		writeBACnetError(w, err)
 		return
 	}
-	values, err := s.client.ReadProperty(ctx, hostPort, bacnet.ObjectIdentifier{Type: bacnet.ObjectDevice, Instance: instance}, bacnet.PropObjectList, nil)
+	values, err := s.cache.readObjectList(ctx, hostPort, instance)
 	if err != nil {
 		writeBACnetError(w, err)
 		return

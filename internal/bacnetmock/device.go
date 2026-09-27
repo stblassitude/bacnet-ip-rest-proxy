@@ -120,10 +120,22 @@ func (d *Device) objectList() []bacnet.Value {
 }
 
 // readProperty returns the current value(s) for one property, honoring the
-// synthetic object-list property on the Device object, or a BACnet error.
-func (d *Device) readProperty(objType bacnet.ObjectType, instance uint32, prop bacnet.PropertyIdentifier) ([]bacnet.Value, *bacnet.BACnetError) {
+// synthetic object-list property on the Device object (including reads of
+// a single array element, where index 0 is the array's length), or a
+// BACnet error.
+func (d *Device) readProperty(objType bacnet.ObjectType, instance uint32, prop bacnet.PropertyIdentifier, arrayIndex *uint32) ([]bacnet.Value, *bacnet.BACnetError) {
 	if objType == bacnet.ObjectDevice && instance == d.instance && prop == bacnet.PropObjectList {
-		return d.objectList(), nil
+		list := d.objectList()
+		switch {
+		case arrayIndex == nil:
+			return list, nil
+		case *arrayIndex == 0:
+			return []bacnet.Value{bacnet.UnsignedValue(uint64(len(list)))}, nil
+		case int(*arrayIndex) <= len(list):
+			return list[*arrayIndex-1 : *arrayIndex], nil
+		default:
+			return nil, &bacnet.BACnetError{Class: bacnet.ErrorClassProperty, Code: bacnet.ErrorCodeInvalidArrayIndex}
+		}
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
