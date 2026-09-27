@@ -233,3 +233,18 @@ func TestClientTimeoutUnreachableHost(t *testing.T) {
 		t.Fatal("expected a timeout error, got nil")
 	}
 }
+
+func TestDeviceInstanceFallsBackToWildcardRead(t *testing.T) {
+	client, server, device := newTestFixture(t)
+	server.SetIgnoreWhoIs(true) // as if the I-Am went out as a broadcast
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	instance, err := client.DeviceInstance(ctx, server.Addr().String())
+	if err != nil {
+		t.Fatalf("device instance: %v", err)
+	}
+	if instance != device.Instance() {
+		t.Errorf("got device instance %d, want %d", instance, device.Instance())
+	}
+}

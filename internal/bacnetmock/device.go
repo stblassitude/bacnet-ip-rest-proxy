@@ -124,6 +124,9 @@ func (d *Device) objectList() []bacnet.Value {
 // a single array element, where index 0 is the array's length), or a
 // BACnet error.
 func (d *Device) readProperty(objType bacnet.ObjectType, instance uint32, prop bacnet.PropertyIdentifier, arrayIndex *uint32) ([]bacnet.Value, *bacnet.BACnetError) {
+	if objType == bacnet.ObjectDevice && instance == bacnet.DeviceInstanceWildcard {
+		instance = d.instance // "this device" (clause 12.11.1)
+	}
 	if objType == bacnet.ObjectDevice && instance == d.instance && prop == bacnet.PropObjectList {
 		list := d.objectList()
 		switch {
@@ -142,6 +145,9 @@ func (d *Device) readProperty(objType bacnet.ObjectType, instance uint32, prop b
 	props, ok := d.objects[objectKey{objType, instance}]
 	if !ok {
 		return nil, &bacnet.BACnetError{Class: bacnet.ErrorClassObject, Code: bacnet.ErrorCodeUnknownObject}
+	}
+	if prop == bacnet.PropObjectID {
+		return []bacnet.Value{bacnet.ObjectIDValue(objType, instance)}, nil
 	}
 	p, ok := props[prop]
 	if !ok {

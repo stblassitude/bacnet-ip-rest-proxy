@@ -4,9 +4,14 @@ import "fmt"
 
 // encodeNPDU wraps apdu in a minimal Network Layer PDU: protocol version 1,
 // no destination/source network addressing (we always address BACnet/IP
-// devices directly, without BACnet routers).
+// devices directly, without BACnet routers). The data-expecting-reply bit
+// is set for Confirmed-Request APDUs, as ASHRAE 135 clause 6.2.2 requires.
 func encodeNPDU(apdu []byte) []byte {
-	return append([]byte{0x01, 0x00}, apdu...)
+	control := byte(0x00)
+	if len(apdu) > 0 && PDUType(apdu[0]>>4) == PDUConfirmedRequest {
+		control |= 0x04
+	}
+	return append([]byte{0x01, control}, apdu...)
 }
 
 // decodeNPDU strips an NPDU header and returns the enclosed APDU. It
@@ -22,19 +27,22 @@ func decodeNPDU(buf []byte) ([]byte, error) {
 	if control&0x80 != 0 {
 		return nil, fmt.Errorf("bacnet: network layer message NPDUs are not supported")
 	}
+	// Field order (clause 6.2): DNET, DLEN, DADR, SNET, SLEN, SADR, then
+	// the hop count, which is present whenever DNET is.
 	if control&0x20 != 0 { // destination specifier present
 		if len(buf) < pos+3 {
 			return nil, fmt.Errorf("bacnet: truncated NPDU destination address")
 		}
-		dlen := int(buf[pos+2])
-		pos += 3 + dlen + 1 // DNET(2)+DLEN(1)+DADR(dlen)+DHOPCOUNT(1)
+		pos += 3 + int(buf[pos+2]) // DNET(2)+DLEN(1)+DADR(dlen)
 	}
 	if control&0x08 != 0 { // source specifier present
 		if len(buf) < pos+3 {
 			return nil, fmt.Errorf("bacnet: truncated NPDU source address")
 		}
-		slen := int(buf[pos+2])
-		pos += 3 + slen
+		pos += 3 + int(buf[pos+2]) // SNET(2)+SLEN(1)+SADR(slen)
+	}
+	if control&0x20 != 0 {
+		pos++ // hop count
 	}
 	if len(buf) < pos+1 {
 		return nil, fmt.Errorf("bacnet: NPDU has no enclosed APDU")

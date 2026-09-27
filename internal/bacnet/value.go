@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // ValueKind identifies which field of Value is populated.
@@ -325,7 +328,11 @@ func decodeApplicationValue(buf []byte) (Value, int, error) {
 		if len(data) < 1 {
 			return Value{}, 0, fmt.Errorf("bacnet: empty character string")
 		}
-		return Value{Kind: KindCharacterString, Str: string(data[1:])}, consumed, nil
+		s, err := decodeCharacterString(data[0], data[1:])
+		if err != nil {
+			return Value{}, 0, err
+		}
+		return Value{Kind: KindCharacterString, Str: s}, consumed, nil
 	case TagBitString:
 		bs, err := decodeBitStringData(data)
 		if err != nil {
@@ -398,4 +405,47 @@ func decodeSignedData(data []byte) int64 {
 		v = v<<8 | int64(b)
 	}
 	return v
+}
+
+// Character sets of a BACnet CharacterString (clause 20.2.9).
+const (
+	charsetUTF8   byte = 0 // ISO 10646 UTF-8 (formerly ANSI X3.4)
+	charsetUCS4   byte = 3 // ISO 10646 UCS-4, big-endian
+	charsetUCS2   byte = 4 // ISO 10646 UCS-2, big-endian
+	charsetLatin1 byte = 5 // ISO 8859-1
+)
+
+// decodeCharacterString converts a CharacterString's data to a Go (UTF-8)
+// string according to its character set.
+func decodeCharacterString(charset byte, data []byte) (string, error) {
+	switch charset {
+	case charsetUTF8:
+		return strings.ToValidUTF8(string(data), string(utf8.RuneError)), nil
+	case charsetLatin1:
+		runes := make([]rune, len(data))
+		for i, b := range data {
+			runes[i] = rune(b)
+		}
+		return string(runes), nil
+	case charsetUCS2:
+		if len(data)%2 != 0 {
+			return "", fmt.Errorf("bacnet: UCS-2 string has odd length %d", len(data))
+		}
+		units := make([]uint16, len(data)/2)
+		for i := range units {
+			units[i] = binary.BigEndian.Uint16(data[2*i:])
+		}
+		return string(utf16.Decode(units)), nil
+	case charsetUCS4:
+		if len(data)%4 != 0 {
+			return "", fmt.Errorf("bacnet: UCS-4 string has length %d, not a multiple of 4", len(data))
+		}
+		runes := make([]rune, len(data)/4)
+		for i := range runes {
+			runes[i] = rune(binary.BigEndian.Uint32(data[4*i:]))
+		}
+		return string(runes), nil
+	default: // 1 (IBM/Microsoft DBCS) and 2 (JIS X 0208) need code pages
+		return "", fmt.Errorf("bacnet: unsupported character set %d", charset)
+	}
 }

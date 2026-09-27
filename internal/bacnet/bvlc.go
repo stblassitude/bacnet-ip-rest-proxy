@@ -7,6 +7,7 @@ import "fmt"
 // hosts, so broadcast/forwarding functions are not implemented.
 const (
 	bvlcTypeIP                byte = 0x81
+	bvlcFuncForwardedNPDU     byte = 0x04
 	bvlcFuncOriginalUnicast   byte = 0x0A
 	bvlcFuncOriginalBroadcast byte = 0x0B
 )
@@ -29,8 +30,13 @@ func DecodeIncomingPacket(pkt []byte) (APDU, error) {
 	if pkt[0] != bvlcTypeIP {
 		return APDU{}, fmt.Errorf("bacnet: unsupported BVLC type 0x%02x", pkt[0])
 	}
+	header := 4
 	switch pkt[1] {
 	case bvlcFuncOriginalUnicast, bvlcFuncOriginalBroadcast:
+	case bvlcFuncForwardedNPDU:
+		// Relayed by a BBMD: the original sender's B/IP address (4-byte
+		// IP, 2-byte port) precedes the NPDU (Annex J.2.5).
+		header += 6
 	default:
 		return APDU{}, fmt.Errorf("bacnet: unsupported BVLC function 0x%02x", pkt[1])
 	}
@@ -38,7 +44,10 @@ func DecodeIncomingPacket(pkt []byte) (APDU, error) {
 	if length != len(pkt) {
 		return APDU{}, fmt.Errorf("bacnet: BVLC length %d does not match packet length %d", length, len(pkt))
 	}
-	apduBytes, err := decodeNPDU(pkt[4:])
+	if len(pkt) < header {
+		return APDU{}, fmt.Errorf("bacnet: truncated BVLC header")
+	}
+	apduBytes, err := decodeNPDU(pkt[header:])
 	if err != nil {
 		return APDU{}, err
 	}

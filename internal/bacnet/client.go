@@ -30,7 +30,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	nextID  uint8
-	pending map[uint8]chan apduOrError
+	pending map[uint8]*pendingRequest
 
 	iamMu   sync.Mutex
 	iamSubs map[chan iamEvent]struct{}
@@ -39,6 +39,13 @@ type Client struct {
 type apduOrError struct {
 	apdu APDU
 	err  error
+}
+
+// pendingRequest is an outstanding confirmed request, awaiting a reply
+// from its destination with its invoke ID.
+type pendingRequest struct {
+	to *net.UDPAddr
+	ch chan apduOrError
 }
 
 type iamEvent struct {
@@ -72,7 +79,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		conn:    conn,
 		timeout: timeout,
 		retries: retries,
-		pending: make(map[uint8]chan apduOrError),
+		pending: make(map[uint8]*pendingRequest),
 		iamSubs: make(map[chan iamEvent]struct{}),
 	}
 	go c.readLoop()
@@ -86,7 +93,9 @@ func (c *Client) LocalAddr() net.Addr { return c.conn.LocalAddr() }
 func (c *Client) Close() error { return c.conn.Close() }
 
 func (c *Client) readLoop() {
-	buf := make([]byte, 1500)
+	// Large enough for any UDP datagram: a maximal 1476-byte APDU plus NPDU
+	// routing information and a forwarded BVLC header exceeds 1500 bytes.
+	buf := make([]byte, 65535)
 	for {
 		n, addr, err := c.conn.ReadFromUDP(buf)
 		if err != nil {
@@ -106,10 +115,15 @@ func (c *Client) handleIncoming(pkt []byte, from *net.UDPAddr) {
 	switch apdu.Type {
 	case PDUSimpleACK, PDUComplexACK, PDUError, PDUReject, PDUAbort:
 		c.mu.Lock()
-		ch, ok := c.pending[apdu.InvokeID]
+		req, ok := c.pending[apdu.InvokeID]
 		c.mu.Unlock()
-		if ok {
-			ch <- apduOrError{apdu: apdu}
+		// Invoke IDs are only unique per peer, so a reply must also come
+		// from the address the request went to.
+		if ok && req.to.IP.Equal(from.IP) {
+			select {
+			case req.ch <- apduOrError{apdu: apdu}:
+			default: // a duplicate reply to a retransmitted request
+			}
 		}
 	case PDUUnconfirmedRequest:
 		if apdu.ServiceChoice == ServiceUnconfirmedIAm {
@@ -184,12 +198,47 @@ func (c *Client) WhoIs(ctx context.Context, hostPort string) (IAm, error) {
 	return IAm{}, fmt.Errorf("%w: who-is to %s", ErrTimeout, addr)
 }
 
+// DeviceInstance returns the device instance number of the BACnet device at
+// hostPort. It asks with Who-Is first; since a device may broadcast its
+// I-Am reply to the standard port, where this client (on its own port)
+// never sees it, it then falls back to reading the Device object's
+// object-identifier through the wildcard instance (clause 12.11.1).
+func (c *Client) DeviceInstance(ctx context.Context, hostPort string) (uint32, error) {
+	iam, whoIsErr := c.WhoIs(ctx, hostPort)
+	if whoIsErr == nil {
+		return iam.Device.Instance, nil
+	}
+	if ctx.Err() != nil {
+		return 0, whoIsErr
+	}
+	values, err := c.ReadProperty(ctx, hostPort, ObjectIdentifier{Type: ObjectDevice, Instance: DeviceInstanceWildcard}, PropObjectID, nil)
+	if err != nil {
+		return 0, fmt.Errorf("%w; reading the wildcard device's object-identifier also failed: %w", whoIsErr, err)
+	}
+	if len(values) != 1 || values[0].Kind != KindObjectID || values[0].Object.Type != ObjectDevice {
+		return 0, fmt.Errorf("%w; unexpected wildcard device object-identifier %v", whoIsErr, values)
+	}
+	return values[0].Object.Instance, nil
+}
+
 func (c *Client) doConfirmedRequest(ctx context.Context, addr *net.UDPAddr, serviceChoice uint8, params []byte) (APDU, error) {
 	c.mu.Lock()
-	invokeID := c.nextID
-	c.nextID++
+	var invokeID uint8
+	found := false
+	for range 256 {
+		invokeID = c.nextID
+		c.nextID++
+		if _, inUse := c.pending[invokeID]; !inUse {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.mu.Unlock()
+		return APDU{}, fmt.Errorf("bacnet: too many outstanding requests")
+	}
 	ch := make(chan apduOrError, 1)
-	c.pending[invokeID] = ch
+	c.pending[invokeID] = &pendingRequest{to: addr, ch: ch}
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()

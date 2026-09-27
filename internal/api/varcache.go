@@ -174,12 +174,12 @@ func (c *varCache) load(hostPort string) (*deviceVars, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, max(c.interval, minLoadTimeout))
 	defer cancel()
 
-	iam, err := c.client.WhoIs(ctx, hostPort)
+	instance, err := c.client.DeviceInstance(ctx, hostPort)
 	if err != nil {
-		return nil, fmt.Errorf("who-is: %w", err)
+		return nil, fmt.Errorf("identifying device: %w", err)
 	}
 	l := &loader{client: c.client, hostPort: hostPort}
-	list, err := l.readObjectList(ctx, iam.Device.Instance)
+	list, err := l.readObjectList(ctx, instance)
 	if err != nil {
 		return nil, fmt.Errorf("reading object-list: %w", err)
 	}
@@ -197,7 +197,7 @@ func (c *varCache) load(hostPort string) (*deviceVars, error) {
 		}
 	}
 
-	dv := &deviceVars{instance: iam.Device.Instance, byID: make(map[bacnet.ObjectIdentifier]*variable, len(all))}
+	dv := &deviceVars{instance: instance, byID: make(map[bacnet.ObjectIdentifier]*variable, len(all))}
 	for _, v := range all {
 		if v.Name == "" {
 			slog.Debug("omitting object without a readable object-name", "device", hostPort, "object", v.Object.Type.String(), "instance", v.Object.Instance)
@@ -293,24 +293,28 @@ func (l *loader) readIndexes(ctx context.Context, obj bacnet.ObjectIdentifier, s
 }
 
 // readMetadata fills in chunk's metadata with ReadPropertyMultiple, halving
-// the chunk whenever the reply doesn't fit in one APDU, and falling back to
-// reading just object-name per object for devices that don't support
-// ReadPropertyMultiple.
+// the chunk whenever the reply doesn't fit in one APDU, and otherwise
+// falling back to reading just object-name per object: for devices that
+// don't support ReadPropertyMultiple, and for any other failure, so one
+// odd reply doesn't fail the whole device's enumeration.
 func (l *loader) readMetadata(ctx context.Context, chunk []variable) error {
 	if !l.noRPM {
 		err := l.readMetadataRPM(ctx, chunk)
 		if err == nil {
 			return nil
 		}
-		if !l.noteRPMFailure(ctx, err) {
+		if ctx.Err() != nil {
 			return err
 		}
-		if !l.noRPM && len(chunk) > 1 {
+		if l.noteRPMFailure(ctx, err) && !l.noRPM && len(chunk) > 1 {
 			mid := len(chunk) / 2
 			if err := l.readMetadata(ctx, chunk[:mid]); err != nil {
 				return err
 			}
 			return l.readMetadata(ctx, chunk[mid:])
+		}
+		if !l.noRPM {
+			slog.Debug("ReadPropertyMultiple of object metadata failed; reading names one by one", "device", l.hostPort, "err", err)
 		}
 	}
 	for i := range chunk {

@@ -61,23 +61,38 @@ func (e *AbortError) Error() string { return fmt.Sprintf("bacnet: abort (reason=
 // device does not respond within the configured timeout/retries.
 var ErrTimeout = fmt.Errorf("bacnet: request timed out")
 
+// DecodeBACnetError decodes the payload of an Error-PDU.
 func DecodeBACnetError(params []byte) (*BACnetError, error) {
-	th, err := decodeTagHeader(params)
-	if err != nil || !th.Context || th.Number != 0 {
-		return nil, fmt.Errorf("bacnet: malformed error PDU: missing error-class")
-	}
-	classData := params[th.Header : th.Header+int(th.LVT)]
-	pos := th.Header + int(th.LVT)
+	bacErr, _, err := decodeErrorSequence(params)
+	return bacErr, err
+}
 
-	th2, err := decodeTagHeader(params[pos:])
-	if err != nil || !th2.Context || th2.Number != 1 {
-		return nil, fmt.Errorf("bacnet: malformed error PDU: missing error-code")
-	}
-	codeStart := pos + th2.Header
-	codeData := params[codeStart : codeStart+int(th2.LVT)]
+// appendErrorSequence appends a BACnet Error (ASHRAE 135 clause 21:
+// SEQUENCE { error-class ENUMERATED, error-code ENUMERATED }), which is
+// encoded as two application-tagged Enumerated values.
+func appendErrorSequence(buf []byte, e BACnetError) []byte {
+	buf = AppendValue(buf, EnumeratedValue(uint32(e.Class)))
+	return AppendValue(buf, EnumeratedValue(uint32(e.Code)))
+}
 
-	return &BACnetError{
-		Class: ErrorClass(decodeUnsignedData(classData)),
-		Code:  ErrorCode(decodeUnsignedData(codeData)),
-	}, nil
+// decodeErrorSequence decodes a BACnet Error at the start of buf, returning
+// it and the number of bytes consumed. Besides the standard application
+// tags it also accepts context tags 0 and 1, the encoding used by some
+// services' error choices and by earlier versions of this package.
+func decodeErrorSequence(buf []byte) (*BACnetError, int, error) {
+	names := [2]string{"error-class", "error-code"}
+	var vals [2]uint32
+	pos := 0
+	for i := range vals {
+		th, err := decodeTagHeader(buf[pos:])
+		ok := err == nil && !th.IsOpening() && !th.IsClosing() &&
+			((!th.Context && th.Number == TagEnumerated) || (th.Context && th.Number == uint8(i)))
+		start := pos + th.Header
+		if !ok || start+int(th.LVT) > len(buf) {
+			return nil, 0, fmt.Errorf("bacnet: malformed error: missing %s", names[i])
+		}
+		vals[i] = uint32(decodeUnsignedData(buf[start : start+int(th.LVT)]))
+		pos = start + int(th.LVT)
+	}
+	return &BACnetError{Class: ErrorClass(vals[0]), Code: ErrorCode(vals[1])}, pos, nil
 }

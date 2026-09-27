@@ -67,9 +67,7 @@ func EncodeComplexACKAPDU(invokeID uint8, serviceChoice uint8, params []byte) []
 
 func EncodeErrorAPDU(invokeID uint8, serviceChoice uint8, bacErr BACnetError) []byte {
 	buf := []byte{byte(PDUError) << 4, invokeID, serviceChoice}
-	buf = AppendContextValue(buf, true, 0, EnumeratedValue(uint32(bacErr.Class)))
-	buf = AppendContextValue(buf, true, 1, EnumeratedValue(uint32(bacErr.Code)))
-	return buf
+	return appendErrorSequence(buf, bacErr)
 }
 
 func EncodeRejectAPDU(invokeID uint8, reason uint8) []byte {

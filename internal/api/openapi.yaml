@@ -257,19 +257,14 @@ components:
           one of a discrete set of states.
         - `multi-state-value` — a generic multi-state value not tied to a
           specific physical I/O point.
+
+        Every other standard object type is accepted by its ASHRAE 135
+        name too (e.g. `schedule`, `trend-log`, `calendar`,
+        `integer-value`, `network-port`), and any type, including
+        proprietary ones, by number: as `object-type(N)`, the form object
+        listings use for types without a name, or as a bare `N`.
       schema:
         type: string
-        enum:
-          - analog-input
-          - analog-output
-          - analog-value
-          - binary-input
-          - binary-output
-          - binary-value
-          - device
-          - multi-state-input
-          - multi-state-output
-          - multi-state-value
     Instance:
       name: instance
       in: path
@@ -333,6 +328,9 @@ components:
           software version string; device object only.
         - `number-of-states` — the number of discrete states a
           Multi-state object supports (states are numbered 1..N).
+
+        Any other property, standard or proprietary, is accepted by its
+        property identifier number, as `property(N)` or a bare `N`.
       schema:
         type: string
   schemas:

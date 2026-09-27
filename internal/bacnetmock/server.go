@@ -3,6 +3,7 @@ package bacnetmock
 import (
 	"log/slog"
 	"net"
+	"sync/atomic"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/bacnet"
 )
@@ -15,7 +16,13 @@ type Server struct {
 	conn   *net.UDPConn
 	log    *slog.Logger
 	done   chan struct{}
+
+	ignoreWhoIs atomic.Bool
 }
+
+// SetIgnoreWhoIs makes the server stop answering Who-Is, like a device
+// whose I-Am is broadcast where the client can't receive it.
+func (s *Server) SetIgnoreWhoIs(ignore bool) { s.ignoreWhoIs.Store(ignore) }
 
 // Listen starts a mock BACnet/IP server for device on addr (e.g.
 // "127.0.0.1:0" to pick an ephemeral port). Call Addr to discover the port
@@ -49,7 +56,7 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) serve() {
-	buf := make([]byte, 1500)
+	buf := make([]byte, 65535)
 	for {
 		n, addr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
@@ -81,7 +88,7 @@ func (s *Server) handlePacket(pkt []byte, from *net.UDPAddr) {
 }
 
 func (s *Server) handleUnconfirmed(apdu bacnet.APDU, from *net.UDPAddr) {
-	if apdu.ServiceChoice != bacnet.ServiceUnconfirmedWhoIs {
+	if apdu.ServiceChoice != bacnet.ServiceUnconfirmedWhoIs || s.ignoreWhoIs.Load() {
 		return
 	}
 	req, err := bacnet.DecodeWhoIsRequest(apdu.Params)

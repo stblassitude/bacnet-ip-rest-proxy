@@ -382,8 +382,7 @@ func EncodeReadPropertyMultipleACK(results []ReadAccessResult) []byte {
 			}
 			if pr.Err != nil {
 				buf = appendOpeningTag(buf, 5)
-				buf = AppendContextValue(buf, true, 0, EnumeratedValue(uint32(pr.Err.Class)))
-				buf = AppendContextValue(buf, true, 1, EnumeratedValue(uint32(pr.Err.Code)))
+				buf = appendErrorSequence(buf, *pr.Err)
 				buf = appendClosingTag(buf, 5)
 			} else {
 				buf = appendOpeningTag(buf, 4)
@@ -457,17 +456,12 @@ func DecodeReadPropertyMultipleACK(buf []byte) ([]ReadAccessResult, error) {
 				pos += 1
 			case 5:
 				pos += th.Header
-				class, n, err := decodeContextEnumerated(buf[pos:], 0)
+				bacErr, n, err := decodeErrorSequence(buf[pos:])
 				if err != nil {
 					return nil, err
 				}
 				pos += n
-				code, n, err := decodeContextEnumerated(buf[pos:], 1)
-				if err != nil {
-					return nil, err
-				}
-				pos += n
-				pr.Err = &BACnetError{Class: ErrorClass(class), Code: ErrorCode(code)}
+				pr.Err = bacErr
 				if _, err := expectClosing(buf[pos:], 5); err != nil {
 					return nil, err
 				}
