@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history and tags, for the release notes
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -74,12 +76,32 @@ jobs:
             ghcr.io/stblassitude/bacnet-ip-rest-proxy:${{ steps.version.outputs.version }}
             ghcr.io/stblassitude/bacnet-ip-rest-proxy:latest
 
+      - name: Write release notes
+        run: |
+          # The summary line of every commit since the previous release tag
+          # (or of all commits, for the first release).
+          if prev=$(git describe --tags --abbrev=0 --match 'v*.*.*' "${GITHUB_REF_NAME}^" 2>/dev/null); then
+            range="${prev}..${GITHUB_REF_NAME}"
+          else
+            range="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --format='- %s (%h)' "${range}"
+            if [ -n "${prev:-}" ]; then
+              echo
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_REF_NAME}"
+            fi
+          } > dist/release-notes.md
+          cat dist/release-notes.md
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
+            --notes-file dist/release-notes.md \
             dist/bacnet-ip-rest-proxy_*.deb \
             dist/bacnet-ip-rest-proxy_*_linux_amd64
