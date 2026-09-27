@@ -3,8 +3,10 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,9 +20,10 @@ import (
 )
 
 // newTestServer spins up a mock BACnet/IP device and an API server wired
-// against it via the given rules, and returns an httptest.Server plus the
-// device's alias name for use in URLs.
-func newTestServer(t *testing.T, rules []authz.Rule, tokens []config.TokenConfig, jwtSecret string) *httptest.Server {
+// against it via the given rules, and returns an httptest.Server (the
+// device is aliased "unit" for use in URLs) plus the mock device's real
+// address, for tests asserting it never leaks to callers.
+func newTestServer(t *testing.T, rules []authz.Rule, tokens []config.TokenConfig, jwtSecret string) (*httptest.Server, string) {
 	t.Helper()
 	device := bacnetmock.NewDevice(2001)
 	device.AddObject(bacnet.ObjectAnalogInput, 1, map[bacnet.PropertyIdentifier]bacnet.Value{
@@ -76,7 +79,7 @@ func newTestServer(t *testing.T, rules []authz.Rule, tokens []config.TokenConfig
 	apiServer := api.NewServer(cfg, client)
 	httpServer := httptest.NewServer(api.NewRouter(apiServer))
 	t.Cleanup(httpServer.Close)
-	return httpServer
+	return httpServer, mockServer.Addr().String()
 }
 
 func doRequest(t *testing.T, srv *httptest.Server, method, path, bearer string, body []byte) *http.Response {
@@ -132,7 +135,7 @@ func standardRules() []authz.Rule {
 }
 
 func TestAnonymousRequestDenied(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices", "", nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want 401", resp.StatusCode)
@@ -143,7 +146,7 @@ func TestAnonymousRequestDenied(t *testing.T) {
 }
 
 func TestUnrecognizedBearerDenied(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices", "garbage", nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("got status %d, want 403", resp.StatusCode)
@@ -151,7 +154,7 @@ func TestUnrecognizedBearerDenied(t *testing.T) {
 }
 
 func TestReadonlyTokenCanReadButNotWrite(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
 
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
 	if resp.StatusCode != http.StatusOK {
@@ -175,7 +178,7 @@ func TestReadonlyTokenCanReadButNotWrite(t *testing.T) {
 }
 
 func TestReadwriteTokenCanWrite(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken(), readwriteToken()}, "")
 
 	priority := 8
 	writeBody, _ := json.Marshal(map[string]any{"value": 42.0, "priority": priority})
@@ -207,7 +210,7 @@ func TestDeviceScopedRule(t *testing.T) {
 			Action:     authz.ActionAllow,
 		},
 	}
-	srv := newTestServer(t, rules, []config.TokenConfig{readonlyToken()}, "")
+	srv, _ := newTestServer(t, rules, []config.TokenConfig{readonlyToken()}, "")
 
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "readonly-token", nil)
 	if resp.StatusCode != http.StatusOK {
@@ -230,12 +233,99 @@ func TestIPScopedRule(t *testing.T) {
 			Action:     authz.ActionAllow,
 		},
 	}
-	srv := newTestServer(t, rules, nil, "")
+	srv, _ := newTestServer(t, rules, nil, "")
 	// httptest.Server listens on 127.0.0.1, so an anonymous request from the
 	// test client (also 127.0.0.1) should be allowed purely by IP.
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/present-value", "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("got status %d, want 200 (IP-based allow)", resp.StatusCode)
+	}
+}
+
+// newTestServerWithTrustedProxies is like newTestServer, but also lets a
+// test configure listen.trustedProxies, for exercising
+// X-Forwarded-For/X-Real-IP handling.
+func newTestServerWithTrustedProxies(t *testing.T, rules []authz.Rule, trustedProxies []string) *httptest.Server {
+	t.Helper()
+	device := bacnetmock.NewDevice(2002)
+	device.AddObject(bacnet.ObjectAnalogInput, 1, map[bacnet.PropertyIdentifier]bacnet.Value{
+		bacnet.PropPresentValue: bacnet.RealValue(1),
+	})
+	mockServer, err := bacnetmock.Listen("127.0.0.1:0", device)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = mockServer.Close() })
+
+	client, err := bacnet.NewClient(bacnet.ClientOptions{LocalAddr: "127.0.0.1:0", Timeout: 500 * time.Millisecond, Retries: 1})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	cfg := &config.Config{
+		Listen:  config.ListenConfig{TrustedProxies: trustedProxies},
+		Devices: map[string]string{"unit": mockServer.Addr().String()},
+		Bacnet:  config.BacnetConfig{Timeout: config.Duration(2 * time.Second)},
+	}
+	for _, rule := range rules {
+		rc := config.RuleConfig{Name: rule.Name, Match: string(rule.Match), Permission: string(rule.Permission), Action: string(rule.Action)}
+		for _, c := range rule.Conditions {
+			rc.Conditions = append(rc.Conditions, config.ConditionConfig{Type: string(c.Type), Field: c.Field, Value: c.Value})
+		}
+		cfg.Authorization.Rules = append(cfg.Authorization.Rules, rc)
+	}
+
+	httpServer := httptest.NewServer(api.NewRouter(api.NewServer(cfg, client)))
+	t.Cleanup(httpServer.Close)
+	return httpServer
+}
+
+func TestTrustedProxyXForwardedForHonored(t *testing.T) {
+	rules := []authz.Rule{{
+		Name:       "spoofed-office-network",
+		Conditions: []authz.Condition{{Type: authz.ConditionIP, Value: "10.0.0.0/8"}},
+		Match:      authz.MatchAll,
+		Permission: authz.PermissionReadOnly,
+		Action:     authz.ActionAllow,
+	}}
+	// httptest.Server always listens on 127.0.0.1, so the real peer for
+	// every request in this test is 127.0.0.1 — configuring it as trusted
+	// means X-Forwarded-For is honored.
+	srv := newTestServerWithTrustedProxies(t, rules, []string{"127.0.0.1/32"})
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/devices/unit/objects/analog-input/1/present-value", nil)
+	req.Header.Set("X-Forwarded-For", "10.1.2.3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (trusted proxy's X-Forwarded-For should be honored)", resp.StatusCode)
+	}
+}
+
+func TestUntrustedPeerCannotSpoofXForwardedFor(t *testing.T) {
+	rules := []authz.Rule{{
+		Name:       "spoofed-office-network",
+		Conditions: []authz.Condition{{Type: authz.ConditionIP, Value: "10.0.0.0/8"}},
+		Match:      authz.MatchAll,
+		Permission: authz.PermissionReadOnly,
+		Action:     authz.ActionAllow,
+	}}
+	// No trusted proxies configured, so a client claiming to be in
+	// 10.0.0.0/8 via X-Forwarded-For must not be believed: the real peer
+	// (127.0.0.1) is what gets matched, and it doesn't satisfy the rule.
+	srv := newTestServerWithTrustedProxies(t, rules, nil)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/devices/unit/objects/analog-input/1/present-value", nil)
+	req.Header.Set("X-Forwarded-For", "10.1.2.3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("an untrusted peer's spoofed X-Forwarded-For must not be honored")
 	}
 }
 
@@ -250,7 +340,7 @@ func TestJWTGroupRule(t *testing.T) {
 			Action:     authz.ActionAllow,
 		},
 	}
-	srv := newTestServer(t, rules, nil, secret)
+	srv, _ := newTestServer(t, rules, nil, secret)
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"group": "admins",
@@ -275,7 +365,7 @@ func TestJWTGroupRule(t *testing.T) {
 }
 
 func TestBACnetErrorMapsTo404(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/999/present-value", "readonly-token", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("got status %d, want 404 for unknown object", resp.StatusCode)
@@ -294,14 +384,13 @@ func TestBACnetErrorMapsTo404(t *testing.T) {
 }
 
 func TestListDevices(t *testing.T) {
-	srv := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
+	srv, _ := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
 	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices", "readonly-token", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("got status %d, want 200", resp.StatusCode)
 	}
 	var devices []struct {
-		ID      string `json:"id"`
-		Address string `json:"address"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&devices); err != nil {
 		t.Fatal(err)
@@ -311,8 +400,52 @@ func TestListDevices(t *testing.T) {
 	}
 }
 
+func TestListDevicesDoesNotLeakAddress(t *testing.T) {
+	srv, realAddr := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices", "readonly-token", nil)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), realAddr) {
+		t.Fatalf("GET /devices leaked the alias's real address %q: %s", realAddr, body)
+	}
+	var devices []map[string]any
+	if err := json.Unmarshal(body, &devices); err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices, want 1", len(devices))
+	}
+	if _, hasAddress := devices[0]["address"]; hasAddress {
+		t.Fatalf("device summary must not include an address field, got %+v", devices[0])
+	}
+}
+
+func TestGetDeviceEchoesRequestedIDNotRealAddress(t *testing.T) {
+	srv, realAddr := newTestServer(t, standardRules(), []config.TokenConfig{readonlyToken()}, "")
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got status %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), realAddr) {
+		t.Fatalf("GET /devices/unit leaked the alias's real address %q: %s", realAddr, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["address"] != "unit" {
+		t.Fatalf(`got address %q, want "unit" (the requested identifier, not the resolved address)`, out["address"])
+	}
+}
+
 func TestOpenAPIAndSwaggerUIServed(t *testing.T) {
-	srv := newTestServer(t, nil, nil, "")
+	srv, _ := newTestServer(t, nil, nil, "")
 
 	resp := doRequest(t, srv, http.MethodGet, "/openapi.yaml", "", nil)
 	if resp.StatusCode != http.StatusOK {

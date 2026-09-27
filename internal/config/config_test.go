@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,5 +197,41 @@ authentication:
 	_, err := Load(writeTemp(t, yaml))
 	if err == nil {
 		t.Fatal("expected an error for duplicate token names")
+	}
+}
+
+func TestTrustedProxyNets(t *testing.T) {
+	cfg, err := Load(writeTemp(t, `
+listen:
+  trustedProxies:
+    - 127.0.0.1
+    - 10.0.0.0/8
+    - "::1"
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	nets := cfg.TrustedProxyNets()
+	if len(nets) != 3 {
+		t.Fatalf("got %d nets, want 3", len(nets))
+	}
+	if !nets[0].Contains(net.ParseIP("127.0.0.1")) {
+		t.Errorf("bare IPv4 should match itself exactly")
+	}
+	if nets[0].Contains(net.ParseIP("127.0.0.2")) {
+		t.Errorf("bare IPv4 should not match a different address")
+	}
+	if !nets[1].Contains(net.ParseIP("10.1.2.3")) {
+		t.Errorf("10.0.0.0/8 should contain 10.1.2.3")
+	}
+	if !nets[2].Contains(net.ParseIP("::1")) {
+		t.Errorf("bare IPv6 should match itself exactly")
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxy(t *testing.T) {
+	_, err := Load(writeTemp(t, "listen:\n  trustedProxies:\n    - not-an-ip\n"))
+	if err == nil {
+		t.Fatal("expected an error for an invalid trustedProxies entry")
 	}
 }

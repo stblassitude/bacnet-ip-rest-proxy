@@ -78,10 +78,11 @@ type objectSummary struct {
 	Instance uint32 `json:"instance"`
 }
 
-// deviceSummary is one entry of GET /devices.
+// deviceSummary is one entry of GET /devices. It deliberately omits the
+// alias's target hostname/IP: that's internal network topology, not
+// something an authorized-to-list-aliases caller should necessarily learn.
 type deviceSummary struct {
-	ID      string `json:"id"`
-	Address string `json:"address"`
+	ID string `json:"id"`
 }
 
 // errorBody is the JSON error envelope returned for any non-2xx response.

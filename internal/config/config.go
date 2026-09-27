@@ -4,7 +4,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +46,13 @@ type ListenConfig struct {
 	// Address is the "host:port" the HTTP(S) server listens on.
 	Address string    `yaml:"address"`
 	TLS     TLSConfig `yaml:"tls"`
+	// TrustedProxies is a list of IPs/CIDRs allowed to supply the
+	// connecting client's real IP via X-Forwarded-For/X-Real-IP. Requests
+	// arriving from any other address have those headers ignored, so a
+	// client can't spoof its way past an `ip` authorization condition by
+	// just setting the header itself. Empty (the default) means no peer
+	// is trusted and the headers are always ignored.
+	TrustedProxies []string `yaml:"trustedProxies"`
 }
 
 type TLSConfig struct {
@@ -128,6 +137,12 @@ func (c *Config) Validate() error {
 	if c.Listen.TLS.Enabled {
 		if c.Listen.TLS.CertFile == "" || c.Listen.TLS.KeyFile == "" {
 			return fmt.Errorf("listen.tls.enabled requires certFile and keyFile")
+		}
+	}
+
+	for _, p := range c.Listen.TrustedProxies {
+		if _, err := parseIPOrCIDR(p); err != nil {
+			return fmt.Errorf("listen.trustedProxies: %w", err)
 		}
 	}
 
@@ -224,4 +239,36 @@ func (c *Config) ResolveDevice(id string) string {
 		return addr
 	}
 	return id
+}
+
+// parseIPOrCIDR parses s as CIDR notation, or as a single IP (matched
+// exactly, as a /32 or /128).
+func parseIPOrCIDR(s string) (*net.IPNet, error) {
+	if strings.Contains(s, "/") {
+		_, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", s, err)
+		}
+		return ipnet, nil
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP %q", s)
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}, nil
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}, nil
+}
+
+// TrustedProxyNets parses listen.trustedProxies into matchable networks.
+// Config.Validate must have been called first.
+func (c *Config) TrustedProxyNets() []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(c.Listen.TrustedProxies))
+	for _, p := range c.Listen.TrustedProxies {
+		if ipnet, err := parseIPOrCIDR(p); err == nil {
+			nets = append(nets, ipnet)
+		}
+	}
+	return nets
 }

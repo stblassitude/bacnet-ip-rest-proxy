@@ -334,16 +334,17 @@ components:
   schemas:
     DeviceSummary:
       type: object
-      description: One entry of the configured device alias table.
+      description: >
+        One entry of the configured device alias table. Deliberately does
+        not include the alias's target hostname/IP — that's internal
+        network topology, not something a caller who can only list
+        aliases should necessarily learn.
       properties:
         id:
           type: string
           description: >
             The alias used as `{deviceId}` in other endpoints (or the
             literal hostname/IP a caller may use directly instead).
-        address:
-          type: string
-          description: The hostname/IP[:port] this alias resolves to.
     DeviceInfo:
       type: object
       description: >
@@ -357,7 +358,10 @@ components:
           description: The `deviceId` this summary was requested for.
         address:
           type: string
-          description: The hostname/IP[:port] the device was reached at.
+          description: >
+            Echoes back the `deviceId` the caller requested — not the
+            resolved hostname/IP the proxy actually contacted, which is
+            never exposed via the API.
         instance:
           type: integer
           description: >

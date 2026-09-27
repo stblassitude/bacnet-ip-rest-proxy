@@ -43,6 +43,25 @@ The HTTP(S) listener.
 | `listen.tls.enabled` | `false` | enable HTTPS |
 | `listen.tls.certFile` | — | PEM certificate file (required if `tls.enabled`) |
 | `listen.tls.keyFile` | — | PEM private key file (required if `tls.enabled`) |
+| `listen.trustedProxies` | `[]` | IPs/CIDRs allowed to supply the client's real IP via `X-Forwarded-For`/`X-Real-IP` |
+
+### Running behind a reverse proxy
+
+When the proxy sits behind a reverse proxy (nginx, Caddy, a load balancer, ...), the TCP connection the proxy sees always comes from that reverse proxy, not the real client — which breaks any authorization rule using an [`ip` condition](#conditions), since it would only ever see the reverse proxy's address.
+
+`listen.trustedProxies` fixes this by naming the reverse proxy's own address(es); the connecting peer's `X-Forwarded-For` (preferred) or `X-Real-IP` header is only trusted when that peer's address is in this list:
+
+```yaml
+listen:
+  trustedProxies:
+    - 127.0.0.1/32   # reverse proxy running on the same host
+    - 10.0.5.0/24     # or a subnet of reverse proxy/load-balancer hosts
+```
+
+!!! warning
+    Never set this to `0.0.0.0/0` or otherwise trust untrusted networks — any client whose peer address is listed here can set `X-Forwarded-For` to *anything*, including a value crafted to satisfy an `ip` authorization condition it shouldn't. Only list the exact addresses of reverse proxies you control.
+
+Only a single hop is supported: when the peer is trusted, the **leftmost** `X-Forwarded-For` entry is taken as the real client (the convention when a proxy appends to, rather than replaces, that header). If `trustedProxies` is empty (the default), these headers are always ignored and the real TCP peer address is used — the safe default for a proxy reachable directly.
 
 ## `bacnet`
 

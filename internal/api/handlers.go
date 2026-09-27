@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ type Server struct {
 	authenticator  *auth.Authenticator
 	rules          []authz.Rule
 	requestTimeout time.Duration
+	trustedProxies []*net.IPNet
 
 	instanceCache sync.Map // hostPort string -> uint32 device instance
 }
@@ -37,6 +39,7 @@ func NewServer(cfg *config.Config, client *bacnet.Client) *Server {
 		authenticator:  auth.NewAuthenticator(auth.Options{Tokens: cfg.AuthTokens(), JWTSecret: cfg.Authentication.JWTSecret}),
 		rules:          cfg.AuthzRules(),
 		requestTimeout: cfg.Bacnet.Timeout.AsDuration(),
+		trustedProxies: cfg.TrustedProxyNets(),
 	}
 }
 
@@ -70,8 +73,8 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summaries := make([]deviceSummary, 0, len(s.devices))
-	for id, addr := range s.devices {
-		summaries = append(summaries, deviceSummary{ID: id, Address: addr})
+	for id := range s.devices {
+		summaries = append(summaries, deviceSummary{ID: id})
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].ID < summaries[j].ID })
 	writeJSON(w, http.StatusOK, summaries)
@@ -108,7 +111,10 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out := map[string]any{"id": deviceID, "address": hostPort, "instance": instance}
+	// address deliberately echoes back what the caller supplied, not the
+	// resolved hostPort: an alias's target host/IP is internal network
+	// topology and must not leak to a caller who only knows the alias.
+	out := map[string]any{"id": deviceID, "address": deviceID, "instance": instance}
 	if len(results) == 1 {
 		for _, pr := range results[0].Results {
 			if pr.Err != nil {

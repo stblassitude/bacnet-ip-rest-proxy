@@ -8,12 +8,48 @@ import (
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/authz"
 )
 
-func clientIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP returns the connecting client's IP, honoring
+// X-Forwarded-For/X-Real-IP only when the immediate TCP peer is a
+// configured trusted proxy — otherwise a client could simply set those
+// headers itself to spoof its way past an `ip` authorization condition.
+//
+// Only a single trusted hop is supported: when trusted, the leftmost
+// X-Forwarded-For entry (the original client, by convention) is used, on
+// the assumption that entry was set by that trusted proxy itself rather
+// than forwarded verbatim from a further-upstream, untrusted client.
+func (s *Server) clientIP(r *http.Request) net.IP {
+	peerHost, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host = r.RemoteAddr
+		peerHost = r.RemoteAddr
 	}
-	return net.ParseIP(host)
+	peer := net.ParseIP(peerHost)
+
+	if s.isTrustedProxy(peer) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			first, _, _ := strings.Cut(xff, ",")
+			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+				return ip
+			}
+		}
+		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+			if ip := net.ParseIP(strings.TrimSpace(xrip)); ip != nil {
+				return ip
+			}
+		}
+	}
+	return peer
+}
+
+func (s *Server) isTrustedProxy(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range s.trustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func bearerToken(r *http.Request) string {
@@ -35,7 +71,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, device string
 
 	req := authz.Request{
 		Device:    device,
-		ClientIP:  clientIP(r),
+		ClientIP:  s.clientIP(r),
 		Operation: op,
 		TokenName: authResult.TokenName,
 		JWTClaims: authResult.Claims,

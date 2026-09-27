@@ -15,9 +15,13 @@ listen:
     enabled: true
     certFile: /etc/bacnet-ip-rest-proxy/cert.pem
     keyFile: /etc/bacnet-ip-rest-proxy/key.pem
+  trustedProxies:
+    - 127.0.0.1/32
 ```
 
 `listen.address` defaults to `:8443`. TLS is optional; when `tls.enabled` is `true`, both `certFile` and `keyFile` are required.
+
+`listen.trustedProxies` is a list of IPs/CIDRs. When the proxy runs behind a reverse proxy (nginx, Caddy, a load balancer, ...), the connecting TCP peer is always that reverse proxy, not the real client — so the `ip` authorization condition needs the real client's address from the `X-Forwarded-For` or `X-Real-IP` header instead. Those headers are only honored when the immediate TCP peer's address is in `trustedProxies`; otherwise they're ignored, so a client can't spoof its way past an `ip` condition by just setting the header itself. Only a single hop is supported: the leftmost `X-Forwarded-For` entry is taken as the real client. Leave `trustedProxies` empty (the default) if the proxy is reachable directly.
 
 ### `bacnet`
 
