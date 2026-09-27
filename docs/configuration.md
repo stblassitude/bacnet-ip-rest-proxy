@@ -4,6 +4,14 @@ The proxy is configured through a single YAML file, passed with `-config` (defau
 
 A commented example ships as [`config.example.yaml`](https://github.com/stblassitude/bacnet-ip-rest-proxy/blob/main/config.example.yaml) in the repository root, and is installed as the initial `/etc/bacnet-ip-rest-proxy/config.yaml` by the `.deb` package.
 
+The file is checked strictly at startup: an unknown or misspelt key is an error, not silently ignored. Every problem found is reported at once, each with its line number and the setting it concerns, and the proxy refuses to start:
+
+```text
+config errors:
+/etc/bacnet-ip-rest-proxy/config.yaml:10: unknown field "peermission" (expected one of: action, conditions, match, name, permission)
+/etc/bacnet-ip-rest-proxy/config.yaml:18: authorization.rules[0].match: invalid match "every" (expected one of: all, any, none, not-all)
+```
+
 ## Top-level structure
 
 ```yaml

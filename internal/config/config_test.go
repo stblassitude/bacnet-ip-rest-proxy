@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/authz"
@@ -233,5 +234,74 @@ func TestLoadRejectsInvalidTrustedProxy(t *testing.T) {
 	_, err := Load(writeTemp(t, "listen:\n  trustedProxies:\n    - not-an-ip\n"))
 	if err == nil {
 		t.Fatal("expected an error for an invalid trustedProxies entry")
+	}
+}
+
+func TestLoadRejectsUnknownFieldWithLine(t *testing.T) {
+	path := writeTemp(t, `
+authorization:
+  rules:
+    - name: admins
+      match: all
+      peermission: readwrite
+      action: allow
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for a misspelt key")
+	}
+	want := path + `:6: unknown field "peermission" (expected one of: action, conditions, match, name, permission)`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("got %q, want it to contain %q", err, want)
+	}
+}
+
+func TestLoadReportsAllValidationErrorsWithLines(t *testing.T) {
+	path := writeTemp(t, `
+authentication:
+  tokens:
+    - name: a
+authorization:
+  rules:
+    - name: bad
+      match: every
+      action: allow
+      permission: readonly
+      conditions:
+        - type: tokn
+          value: x
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	for _, want := range []string{
+		path + ":4: authentication.tokens[0].token: required",
+		path + `:8: authorization.rules[0].match: invalid match "every"`,
+		path + `:12: authorization.rules[0].conditions[0].type: invalid condition type "tokn"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("got %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestLoadReportsInvalidDurationWithLine(t *testing.T) {
+	path := writeTemp(t, "bacnet:\n  timeout: 3 seconds\n")
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), path+`:2: invalid duration "3 seconds"`) {
+		t.Fatalf("got %v, want an invalid duration error at line 2", err)
+	}
+}
+
+func TestExampleConfigLoads(t *testing.T) {
+	if _, err := Load("../../config.example.yaml"); err != nil {
+		t.Fatalf("config.example.yaml must load under strict parsing: %v", err)
+	}
+}
+
+func TestEmptyConfigLoads(t *testing.T) {
+	if _, err := Load(writeTemp(t, "")); err != nil {
+		t.Fatalf("an empty file should load with defaults: %v", err)
 	}
 }

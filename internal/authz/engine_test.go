@@ -223,15 +223,13 @@ func TestOperationCondition(t *testing.T) {
 	}
 }
 
-// TestREADMEExampleRules exercises the two rules given verbatim as an example
-// in the README, reconstructed from the (corrected, missing-dash) example
-// YAML. NOTE: as literally written, rule 1's second condition
-// {type: operation, value: "*"} always matches (wildcard "*" matches
+// TestREADMEExampleRules exercises the README's original example rules,
+// which paired the issuer guard with an extra {type: operation, value: "*"}
+// condition. That condition always matches (wildcard "*" matches
 // everything), which makes `match: none` impossible to satisfy — so rule 1
 // can never fire, and the "wrong issuer" guard it's meant to express never
-// actually runs. This test documents that real (and probably unintended)
-// behavior rather than the guard's evident intent; see the accompanying
-// summary for a suggested fix to the example.
+// actually runs. The README now shows the corrected form (checked at the
+// end of this test); the docs' match:none pitfall note explains why.
 func TestREADMEExampleRules(t *testing.T) {
 	rules := []Rule{
 		{

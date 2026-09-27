@@ -3,7 +3,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -25,7 +28,8 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	}
 	parsed, err := time.ParseDuration(s)
 	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
+		// A *yaml.TypeError keeps the line number in the decoder's report.
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: invalid duration %q (use e.g. 3s, 500ms, 1m)", value.Line, s)}}
 	}
 	*d = Duration(parsed)
 	return nil
@@ -113,12 +117,18 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("config: parse %s: %w", path, err)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true) // a misspelt key is an error, not silently ignored
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("config errors:\n%w", yamlErrors(path, err))
 	}
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("config: %s: %w", path, err)
+		// The file parsed, so this can't fail; it's only used to map each
+		// error's setting path back to a line.
+		var root yaml.Node
+		_ = yaml.Unmarshal(data, &root)
+		return nil, fmt.Errorf("config errors:\n%w", withLines(path, &root, err))
 	}
 	return &cfg, nil
 }
@@ -140,74 +150,85 @@ func (c *Config) applyDefaults() {
 
 // Validate checks the configuration for internal consistency: valid
 // match/action/condition-type enum values, TLS file presence, and duplicate
-// token/device names.
+// token/device names. It reports every problem found, each as a *FieldError
+// naming the offending setting, combined with errors.Join.
 func (c *Config) Validate() error {
+	var errs []error
 	if c.Listen.TLS.Enabled {
-		if c.Listen.TLS.CertFile == "" || c.Listen.TLS.KeyFile == "" {
-			return fmt.Errorf("listen.tls.enabled requires certFile and keyFile")
+		if c.Listen.TLS.CertFile == "" {
+			errs = append(errs, fieldErrorf("listen.tls.certFile", "required when listen.tls.enabled is true"))
+		}
+		if c.Listen.TLS.KeyFile == "" {
+			errs = append(errs, fieldErrorf("listen.tls.keyFile", "required when listen.tls.enabled is true"))
 		}
 	}
 
 	if c.Bacnet.CacheRefresh < 0 {
-		return fmt.Errorf("bacnet.cacheRefresh must be positive")
+		errs = append(errs, fieldErrorf("bacnet.cacheRefresh", "must be positive"))
 	}
 
-	for _, p := range c.Listen.TrustedProxies {
+	for i, p := range c.Listen.TrustedProxies {
 		if _, err := parseIPOrCIDR(p); err != nil {
-			return fmt.Errorf("listen.trustedProxies: %w", err)
+			errs = append(errs, fieldErrorf(fmt.Sprintf("listen.trustedProxies[%d]", i), "%v", err))
 		}
 	}
 
 	seenTokenNames := make(map[string]bool, len(c.Authentication.Tokens))
-	for _, tok := range c.Authentication.Tokens {
-		if tok.Name == "" || tok.Token == "" {
-			return fmt.Errorf("authentication.tokens: each entry needs a name and a token")
+	for i, tok := range c.Authentication.Tokens {
+		path := fmt.Sprintf("authentication.tokens[%d]", i)
+		if tok.Name == "" {
+			errs = append(errs, fieldErrorf(path+".name", "required"))
 		}
-		if seenTokenNames[tok.Name] {
-			return fmt.Errorf("authentication.tokens: duplicate name %q", tok.Name)
+		if tok.Token == "" {
+			errs = append(errs, fieldErrorf(path+".token", "required"))
+		}
+		if tok.Name != "" && seenTokenNames[tok.Name] {
+			errs = append(errs, fieldErrorf(path+".name", "duplicate token name %q", tok.Name))
 		}
 		seenTokenNames[tok.Name] = true
 	}
 
 	for i, rule := range c.Authorization.Rules {
-		if err := rule.validate(); err != nil {
-			return fmt.Errorf("authorization.rules[%d] (%s): %w", i, rule.Name, err)
-		}
+		errs = append(errs, rule.validate(fmt.Sprintf("authorization.rules[%d]", i))...)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-func (r RuleConfig) validate() error {
+func (r RuleConfig) validate(path string) []error {
+	var errs []error
 	switch authz.MatchMode(r.Match) {
 	case authz.MatchNone, authz.MatchNotAll, authz.MatchAny, authz.MatchAll:
 	default:
-		return fmt.Errorf("invalid match %q", r.Match)
+		errs = append(errs, fieldErrorf(path+".match", "invalid match %q (expected one of: all, any, none, not-all)", r.Match))
 	}
 	switch authz.Action(r.Action) {
 	case authz.ActionAllowNow, authz.ActionDenyNow, authz.ActionAllow, authz.ActionDeny:
 	default:
-		return fmt.Errorf("invalid action %q", r.Action)
+		errs = append(errs, fieldErrorf(path+".action", "invalid action %q (expected one of: allow, allow-now, deny, deny-now)", r.Action))
 	}
 	isAllow := r.Action == string(authz.ActionAllow) || r.Action == string(authz.ActionAllowNow)
 	if isAllow {
 		switch authz.Permission(r.Permission) {
 		case authz.PermissionReadOnly, authz.PermissionReadWrite:
+		case "":
+			errs = append(errs, fieldErrorf(path+".permission", "required for an allow rule (readonly or readwrite)"))
 		default:
-			return fmt.Errorf("invalid permission %q for an allow rule", r.Permission)
+			errs = append(errs, fieldErrorf(path+".permission", "invalid permission %q (expected readonly or readwrite)", r.Permission))
 		}
 	}
-	for _, c := range r.Conditions {
+	for i, c := range r.Conditions {
+		cpath := fmt.Sprintf("%s.conditions[%d]", path, i)
 		switch authz.ConditionType(c.Type) {
 		case authz.ConditionDevice, authz.ConditionIP, authz.ConditionOperation, authz.ConditionToken, authz.ConditionVariable:
 		case authz.ConditionJWT:
 			if c.Field == "" {
-				return fmt.Errorf("jwt condition requires a field")
+				errs = append(errs, fieldErrorf(cpath+".field", "required for a jwt condition"))
 			}
 		default:
-			return fmt.Errorf("invalid condition type %q", c.Type)
+			errs = append(errs, fieldErrorf(cpath+".type", "invalid condition type %q (expected one of: device, ip, jwt, operation, token, variable)", c.Type))
 		}
 	}
-	return nil
+	return errs
 }
 
 // AuthTokens converts authentication.tokens into the form internal/auth

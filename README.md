@@ -4,7 +4,7 @@ This tools provides a REST interface to Bacnet/IP translator: clients use HTTP R
 
 ## Configuration
 
-The proxy is configured through YAML file.
+The proxy is configured through YAML file. Unknown keys are an error, and every configuration error is reported with its line number.
 
 ### Listening and HTTPS
 
@@ -53,16 +53,14 @@ authorization:
         - type: jwt
           field: iss
           value: id.example.com
-        - operation: *
       match: none
-      permission: none
       action: deny-now
     - name: admins are allowed full access
       conditions:
         - type: jwt
           field: group
           value: admins
-        - operation: *
+      match: all
       permission: readwrite
       action: allow
 ```
