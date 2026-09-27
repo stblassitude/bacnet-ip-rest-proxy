@@ -329,6 +329,12 @@ components:
         - `number-of-states` — the number of discrete states a
           Multi-state object supports (states are numbered 1..N).
 
+        Also recognized by name: `active-text`, `inactive-text`,
+        `state-text`, `reliability`, `date-list`, `effective-period`,
+        `weekly-schedule`, `exception-schedule`, `schedule-default`,
+        `event-time-stamps`, `log-buffer`, `local-date`, `local-time`,
+        `system-status`, `vendor-identifier` and `protocol-revision`.
+
         Any other property, standard or proprietary, is accepted by its
         property identifier number, as `property(N)` or a bare `N`.
       schema:
@@ -475,6 +481,18 @@ components:
             String as an array of booleans, Object Identifier as
             `{type, instance}`, and an array-valued property (e.g.
             Object_List, Priority_Array) as a JSON array of the above.
+            Date and Time render as `YYYY-MM-DD` and `hh:mm:ss.hh`, with
+            `*` for unspecified (wildcard) fields.
+
+            Properties with structured values (e.g. Event_Time_Stamps,
+            Weekly_Schedule, Exception_Schedule, Log_Buffer) are decoded
+            generically: each context-tagged constructed element becomes
+            `{"tag": n, "items": [...]}`, and each context-tagged primitive
+            inside one becomes `{"tag": n, "data": "<hex>"}`, since its type
+            is defined by the property's ASN.1 production (e.g. in a
+            BACnetTimeStamp, tag 0 is a Time and tag 1 an Unsigned
+            sequence number). Application-tagged values inside are rendered
+            as above.
             A device object's Object_List only contains the objects the
             caller may read, and `?index=` is applied to that filtered
             list (index 0 is its length).

@@ -180,7 +180,7 @@ func DecodeReadPropertyACK(buf []byte) (ReadPropertyACK, error) {
 	}
 	pos += n
 
-	values, n, err := decodeApplicationValues(buf[pos:])
+	values, n, err := decodeValues(buf[pos:])
 	if err != nil {
 		return a, err
 	}
@@ -444,7 +444,7 @@ func DecodeReadPropertyMultipleACK(buf []byte) ([]ReadAccessResult, error) {
 			switch tag {
 			case 4:
 				pos += th.Header
-				values, n, err := decodeApplicationValues(buf[pos:])
+				values, n, err := decodeValues(buf[pos:])
 				if err != nil {
 					return nil, err
 				}

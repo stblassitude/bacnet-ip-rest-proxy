@@ -20,6 +20,7 @@ type objectKey struct {
 // present-value properties, its BACnet priority array.
 type property struct {
 	value       bacnet.Value      // non-commandable value, or the relinquish-default
+	list        []bacnet.Value    // if set, an array/list value, returned instead of value
 	priorities  [16]*bacnet.Value // 1-indexed as [0..15] == priority 1..16
 	commandable bool
 }
@@ -99,6 +100,18 @@ func (d *Device) SetProperty(objType bacnet.ObjectType, instance uint32, prop ba
 	d.objects[key][prop] = &property{value: v}
 }
 
+// SetPropertyList sets a property to an array or list of values, e.g. an
+// array of constructed values such as event-time-stamps.
+func (d *Device) SetPropertyList(objType bacnet.ObjectType, instance uint32, prop bacnet.PropertyIdentifier, values []bacnet.Value) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := objectKey{objType, instance}
+	if d.objects[key] == nil {
+		d.objects[key] = make(map[bacnet.PropertyIdentifier]*property)
+	}
+	d.objects[key][prop] = &property{list: values}
+}
+
 func (d *Device) objectList() []bacnet.Value {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -152,6 +165,9 @@ func (d *Device) readProperty(objType bacnet.ObjectType, instance uint32, prop b
 	p, ok := props[prop]
 	if !ok {
 		return nil, &bacnet.BACnetError{Class: bacnet.ErrorClassProperty, Code: bacnet.ErrorCodeUnknownProperty}
+	}
+	if p.list != nil {
+		return p.list, nil
 	}
 	return []bacnet.Value{effectiveValue(p)}, nil
 }

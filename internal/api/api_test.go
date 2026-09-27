@@ -801,3 +801,27 @@ func TestEnumerationFailureSurfacesBACnetErrorToAuthenticatedCallers(t *testing.
 		t.Errorf("anonymous: got status %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestReadConstructedProperty(t *testing.T) {
+	srv, device := newVariableTestServer(t, standardRules(), 0)
+	device.SetPropertyList(bacnet.ObjectAnalogInput, 1, bacnet.PropEventTimeStamps, []bacnet.Value{
+		bacnet.ConstructedValue(2,
+			bacnet.Value{Kind: bacnet.KindDate, Date: bacnet.Date{Year: 2022, Month: 9, Day: 27, DayOfWeek: -1}},
+			bacnet.Value{Kind: bacnet.KindTime, Time: bacnet.Time{Hour: 12, Minute: 30, Second: -1, Hundredth: -1}},
+		),
+		bacnet.ContextPrimitiveValue(1, []byte{0x05}),
+	})
+
+	resp := doRequest(t, srv, http.MethodGet, "/api/v1/devices/unit/objects/analog-input/1/event-time-stamps", "readonly-token", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got status %d, want 200", resp.StatusCode)
+	}
+	var got struct {
+		Value json.RawMessage `json:"value"`
+	}
+	decodeJSON(t, resp, &got)
+	want := `[{"items":["2022-09-27","12:30:*.*"],"tag":2},{"data":"05","tag":1}]`
+	if string(got.Value) != want {
+		t.Fatalf("got  %s\nwant %s", got.Value, want)
+	}
+}

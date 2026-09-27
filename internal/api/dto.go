@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"github.com/stblassitude/bacnet-ip-rest-proxy/internal/bacnet"
@@ -9,8 +10,11 @@ import (
 // jsonValue converts a decoded BACnet Value to its REST JSON representation.
 // See README/API design: Real/Unsigned/Integer -> number, Boolean -> bool,
 // Enumerated -> string (falling back to the raw number if unrecognized),
-// CharacterString -> string, Date/Time -> string, BitString -> []bool,
-// ObjectIdentifier -> {type, instance}.
+// CharacterString -> string, Date/Time -> string ("*" for unspecified
+// fields), BitString -> []bool, ObjectIdentifier -> {type, instance}.
+// Constructed values (e.g. BACnetTimeStamp, weekly-schedule entries) render
+// as {tag, items}, and context-tagged primitives inside them as {tag, data}
+// with the raw data in hex, since their type depends on the property.
 func jsonValue(v bacnet.Value) any {
 	switch v.Kind {
 	case bacnet.KindNull:
@@ -34,14 +38,31 @@ func jsonValue(v bacnet.Value) any {
 	case bacnet.KindEnumerated:
 		return v.Enum
 	case bacnet.KindDate:
-		return fmt.Sprintf("%04d-%02d-%02d", v.Date.Year, v.Date.Month, v.Date.Day)
+		return field(v.Date.Year, 4) + "-" + field(v.Date.Month, 2) + "-" + field(v.Date.Day, 2)
 	case bacnet.KindTime:
-		return fmt.Sprintf("%02d:%02d:%02d.%02d", v.Time.Hour, v.Time.Minute, v.Time.Second, v.Time.Hundredth)
+		return field(v.Time.Hour, 2) + ":" + field(v.Time.Minute, 2) + ":" + field(v.Time.Second, 2) + "." + field(v.Time.Hundredth, 2)
 	case bacnet.KindObjectID:
 		return map[string]any{"type": v.Object.Type.String(), "instance": v.Object.Instance}
+	case bacnet.KindContextPrimitive:
+		return map[string]any{"tag": v.Tag, "data": hex.EncodeToString(v.Octets)}
+	case bacnet.KindConstructed:
+		items := make([]any, len(v.Items))
+		for i, item := range v.Items {
+			items[i] = jsonValue(item)
+		}
+		return map[string]any{"tag": v.Tag, "items": items}
 	default:
 		return nil
 	}
+}
+
+// field formats a date/time field zero-padded to width, or "*" if it's
+// unspecified (BACnet's wildcard, decoded as -1).
+func field(v, width int) string {
+	if v < 0 {
+		return "*"
+	}
+	return fmt.Sprintf("%0*d", width, v)
 }
 
 // jsonValues renders a slice of Values as a bare JSON value when there is

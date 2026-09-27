@@ -110,6 +110,22 @@ const (
 	PropFirmwareRevision   PropertyIdentifier = 44
 	PropApplicationVersion PropertyIdentifier = 12
 	PropNumberOfStates     PropertyIdentifier = 74
+	PropActiveText         PropertyIdentifier = 4
+	PropDateList           PropertyIdentifier = 23
+	PropEffectivePeriod    PropertyIdentifier = 32
+	PropExceptionSchedule  PropertyIdentifier = 38
+	PropInactiveText       PropertyIdentifier = 46
+	PropLocalDate          PropertyIdentifier = 56
+	PropLocalTime          PropertyIdentifier = 57
+	PropReliability        PropertyIdentifier = 103
+	PropStateText          PropertyIdentifier = 110
+	PropSystemStatus       PropertyIdentifier = 112
+	PropVendorIdentifier   PropertyIdentifier = 120
+	PropWeeklySchedule     PropertyIdentifier = 123
+	PropEventTimeStamps    PropertyIdentifier = 130
+	PropLogBuffer          PropertyIdentifier = 131
+	PropProtocolRevision   PropertyIdentifier = 139
+	PropScheduleDefault    PropertyIdentifier = 174
 )
 
 var propertyNames = map[PropertyIdentifier]string{
@@ -130,6 +146,22 @@ var propertyNames = map[PropertyIdentifier]string{
 	PropFirmwareRevision:   "firmware-revision",
 	PropApplicationVersion: "application-software-version",
 	PropNumberOfStates:     "number-of-states",
+	PropActiveText:         "active-text",
+	PropDateList:           "date-list",
+	PropEffectivePeriod:    "effective-period",
+	PropExceptionSchedule:  "exception-schedule",
+	PropInactiveText:       "inactive-text",
+	PropLocalDate:          "local-date",
+	PropLocalTime:          "local-time",
+	PropReliability:        "reliability",
+	PropStateText:          "state-text",
+	PropSystemStatus:       "system-status",
+	PropVendorIdentifier:   "vendor-identifier",
+	PropWeeklySchedule:     "weekly-schedule",
+	PropEventTimeStamps:    "event-time-stamps",
+	PropLogBuffer:          "log-buffer",
+	PropProtocolRevision:   "protocol-revision",
+	PropScheduleDefault:    "schedule-default",
 }
 
 var propertyByName = func() map[string]PropertyIdentifier {

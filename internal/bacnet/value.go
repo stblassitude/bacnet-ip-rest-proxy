@@ -26,6 +26,14 @@ const (
 	KindDate
 	KindTime
 	KindObjectID
+	// KindContextPrimitive is a context-tagged primitive inside a
+	// constructed property value (Tag, Octets). Its type is defined by the
+	// property's ASN.1 production, which a generic decoder doesn't know, so
+	// the data is kept raw.
+	KindContextPrimitive
+	// KindConstructed is a context-tagged constructed value, i.e. the data
+	// between an opening and a closing tag (Tag, Items).
+	KindConstructed
 )
 
 // Date is a BACnet Date value. A field value of -1 means "unspecified"
@@ -65,6 +73,8 @@ type Value struct {
 	Date     Date
 	Time     Time
 	Object   ObjectIdentifier
+	Tag      uint8   // context tag number, for KindContextPrimitive/KindConstructed
+	Items    []Value // contents of a KindConstructed value
 }
 
 func NullValue() Value               { return Value{Kind: KindNull} }
@@ -78,6 +88,12 @@ func EnumeratedValue(v uint32) Value { return Value{Kind: KindEnumerated, Enum: 
 func BitStringValue(b []bool) Value  { return Value{Kind: KindBitString, Bits: BitString{Bits: b}} }
 func ObjectIDValue(t ObjectType, i uint32) Value {
 	return Value{Kind: KindObjectID, Object: ObjectIdentifier{Type: t, Instance: i}}
+}
+func ContextPrimitiveValue(tag uint8, data []byte) Value {
+	return Value{Kind: KindContextPrimitive, Tag: tag, Octets: data}
+}
+func ConstructedValue(tag uint8, items ...Value) Value {
+	return Value{Kind: KindConstructed, Tag: tag, Items: items}
 }
 
 // applicationTagFor returns the fixed application tag number for a Value's kind.
@@ -113,9 +129,20 @@ func applicationTagFor(k ValueKind) uint8 {
 	panic("bacnet: unknown value kind")
 }
 
-// AppendValue appends v application-tagged (context=false) to buf. Used for
-// values embedded directly in unconfirmed services such as I-Am.
+// AppendValue appends v application-tagged (context=false) to buf, or, for
+// the context-tagged kinds, with its own context tag.
 func AppendValue(buf []byte, v Value) []byte {
+	switch v.Kind {
+	case KindContextPrimitive:
+		buf = appendTagHeader(buf, v.Tag, true, uint32(len(v.Octets)))
+		return append(buf, v.Octets...)
+	case KindConstructed:
+		buf = appendOpeningTag(buf, v.Tag)
+		for _, item := range v.Items {
+			buf = AppendValue(buf, item)
+		}
+		return appendClosingTag(buf, v.Tag)
+	}
 	return AppendContextValue(buf, false, applicationTagFor(v.Kind), v)
 }
 
@@ -365,8 +392,8 @@ func decodeApplicationValue(buf []byte) (Value, int, error) {
 }
 
 // decodeApplicationValues decodes a run of application-tagged values from
-// buf until it is exhausted or a context closing tag is encountered
-// (whichever the caller checks for). Used for array/list properties.
+// buf until it is exhausted or a context tag is encountered. Used for
+// services whose parameters are all application-tagged, such as I-Am.
 func decodeApplicationValues(buf []byte) ([]Value, int, error) {
 	var values []Value
 	pos := 0
@@ -384,6 +411,68 @@ func decodeApplicationValues(buf []byte) ([]Value, int, error) {
 		}
 		values = append(values, v)
 		pos += n
+	}
+	return values, pos, nil
+}
+
+// maxNesting bounds how deeply constructed values may nest, so a malformed
+// reply can't recurse without limit. Real property values nest a few
+// levels at most (e.g. weekly-schedule: day, time-value, value).
+const maxNesting = 16
+
+// decodeValues decodes an ABSTRACT-SYNTAX property value, such as the
+// contents of a ReadProperty-ACK's [3] propertyValue: a run of application
+// tagged values, context-tagged primitives and constructed values, until
+// buf is exhausted or a closing tag not its own is reached (left for the
+// caller to consume).
+func decodeValues(buf []byte) ([]Value, int, error) {
+	return decodeNestedValues(buf, 0)
+}
+
+func decodeNestedValues(buf []byte, depth int) ([]Value, int, error) {
+	var values []Value
+	pos := 0
+	for pos < len(buf) {
+		th, err := decodeTagHeader(buf[pos:])
+		if err != nil {
+			return nil, 0, err
+		}
+		switch {
+		case !th.Context:
+			v, n, err := decodeApplicationValue(buf[pos:])
+			if err != nil {
+				return nil, 0, err
+			}
+			values = append(values, v)
+			pos += n
+		case th.IsClosing():
+			return values, pos, nil
+		case th.IsOpening():
+			if depth >= maxNesting {
+				return nil, 0, fmt.Errorf("bacnet: constructed value nested deeper than %d", maxNesting)
+			}
+			pos += th.Header
+			items, n, err := decodeNestedValues(buf[pos:], depth+1)
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+			n, err = expectClosing(buf[pos:], th.Number)
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+			values = append(values, ConstructedValue(th.Number, items...))
+		default:
+			start := pos + th.Header
+			if uint32(len(buf)-start) < th.LVT {
+				return nil, 0, fmt.Errorf("bacnet: truncated context tag %d value", th.Number)
+			}
+			data := make([]byte, th.LVT)
+			copy(data, buf[start:start+int(th.LVT)])
+			values = append(values, ContextPrimitiveValue(th.Number, data))
+			pos = start + int(th.LVT)
+		}
 	}
 	return values, pos, nil
 }

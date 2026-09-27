@@ -76,11 +76,18 @@ func appendTagHeader(buf []byte, tagNumber uint8, context bool, length uint32) [
 
 // appendOpeningTag / appendClosingTag bracket constructed context-tagged data.
 func appendOpeningTag(buf []byte, tagNumber uint8) []byte {
-	return append(buf, byte(tagNumber<<4)|0x08|byte(openingLVT))
+	return appendMarkerTag(buf, tagNumber, openingLVT)
 }
 
 func appendClosingTag(buf []byte, tagNumber uint8) []byte {
-	return append(buf, byte(tagNumber<<4)|0x08|byte(closingLVT))
+	return appendMarkerTag(buf, tagNumber, closingLVT)
+}
+
+func appendMarkerTag(buf []byte, tagNumber uint8, lvt uint32) []byte {
+	if tagNumber < 15 {
+		return append(buf, tagNumber<<4|0x08|byte(lvt))
+	}
+	return append(buf, 0xF0|0x08|byte(lvt), tagNumber) // extended tag number
 }
 
 // tagInfo describes a decoded tag header.
