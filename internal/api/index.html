@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BACnet/IP REST Proxy</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #222; background: #fff; }
+  a { color: #0b5cad; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #161616; }
+    a { color: #6cb4ff; }
+  }
+</style>
+</head>
+<body>
+<h1>BACnet/IP REST Proxy</h1>
+<p>
+  This service provides a REST interface to BACnet/IP devices: clients use HTTP
+  calls to query and update BACnet objects, which are translated into the
+  corresponding BACnet/IP messages and sent to the target device. Access is
+  controlled through HTTPS, authentication and authorization rules. See the
+  <a href="docs/index.html">API reference</a> or the
+  <a href="openapi.yaml">OpenAPI specification</a>. Source code and
+  documentation are available at
+  <a href="https://github.com/stblassitude/bacnet-ip-rest-proxy">github.com/stblassitude/bacnet-ip-rest-proxy</a>.
+</p>
+</body>
+</html>

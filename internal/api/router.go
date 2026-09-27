@@ -12,8 +12,11 @@ import (
 //go:embed openapi.yaml
 var openAPISpec []byte
 
-// NewRouter builds the full HTTP handler: the versioned REST API, the raw
-// OpenAPI spec, and an offline-rendered Swagger UI.
+//go:embed index.html
+var indexPage []byte
+
+// NewRouter builds the full HTTP handler: a static landing page, the
+// versioned REST API, the raw OpenAPI spec, and an offline-rendered Swagger UI.
 func NewRouter(s *Server) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -23,6 +26,10 @@ func NewRouter(s *Server) http.Handler {
 	// spoof the IP that authz's `ip` condition matches against. clientIP()
 	// in middleware.go reads r.RemoteAddr (the actual TCP peer) directly.
 
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexPage)
+	})
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(openAPISpec)

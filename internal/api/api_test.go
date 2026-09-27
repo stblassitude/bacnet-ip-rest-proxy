@@ -447,7 +447,12 @@ func TestGetDeviceEchoesRequestedIDNotRealAddress(t *testing.T) {
 func TestOpenAPIAndSwaggerUIServed(t *testing.T) {
 	srv, _ := newTestServer(t, nil, nil, "")
 
-	resp := doRequest(t, srv, http.MethodGet, "/openapi.yaml", "", nil)
+	resp := doRequest(t, srv, http.MethodGet, "/", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / got status %d, want 200", resp.StatusCode)
+	}
+
+	resp = doRequest(t, srv, http.MethodGet, "/openapi.yaml", "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /openapi.yaml got status %d, want 200", resp.StatusCode)
 	}
